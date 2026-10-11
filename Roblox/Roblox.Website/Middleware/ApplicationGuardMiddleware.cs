@@ -247,6 +247,12 @@ public class ApplicationGuardMiddleware
         "/auth/home",
         "/auth/2fa",
         "/auth/captcha",
+        // Process callbacks authenticate their JSON body, not a browser UA.
+        "/gs/ping",
+        "/gs/players/report",
+        "/gs/activity",
+        "/gs/shutdown",
+        "/gs/delete",
     };
 
     private async Task Redirect(HttpContext ctx, string dest)

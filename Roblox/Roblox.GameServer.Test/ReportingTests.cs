@@ -40,11 +40,12 @@ public class ReportingTests
         foreach (var route in new[] { "/gs/ping", "/gs/players/report", "/gs/activity", "/gs/shutdown", "/gs/delete" })
         {
             foreach (var secret in new string?[] { null, "", "wrong", ReportingFixture.ArbiterSecret })
+            foreach (var userAgent in new string?[] { null, "Roblox/WinInet", "axios/1.9.0", "node-fetch/3.3" })
             {
                 var payload = Report(server, place, user);
                 payload["authorization"] = secret;
                 using var request = new HttpRequestMessage(HttpMethod.Post, route) { Content = JsonContent.Create(payload) };
-                request.Headers.Add("User-Agent", "Roblox/WinInet");
+                if (userAgent != null) request.Headers.Add("User-Agent", userAgent);
                 request.Headers.Add("accesskey", ReportingFixture.Secret);
                 using var response = await db.Client.SendAsync(request);
                 Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
