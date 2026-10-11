@@ -47,13 +47,15 @@ public class TwitterApi
     {
         if (!string.IsNullOrWhiteSpace(authorization))
             throw new Exception("Already configured");
-        if (string.IsNullOrWhiteSpace(newAuth))
-            throw new Exception("Bad token");
-        authorization = newAuth;
+        // A local website does not need a Twitter developer account. Leave this
+        // optional integration disabled instead of failing the entire startup.
+        authorization = string.IsNullOrWhiteSpace(newAuth) ? null : newAuth;
     }
 
     public async Task<TwitterUserObject> GetUserByScreenName(string screenName)
     {
+        if (string.IsNullOrWhiteSpace(authorization))
+            throw new InvalidOperationException("Twitter integration is disabled; configure Twitter:Bearer to enable it");
         var encodedName = System.Web.HttpUtility.UrlEncode(screenName);
         var request = new HttpRequestMessage(HttpMethod.Get,
             "https://api.twitter.com/2/users/by?usernames="+encodedName+"&user.fields=created_at,public_metrics,description&tweet.fields=author_id,created_at");
