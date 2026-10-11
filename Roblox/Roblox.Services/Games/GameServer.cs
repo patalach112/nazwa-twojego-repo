@@ -24,35 +24,37 @@ public partial class GameServerService : ServiceBase
     public class ArbiterHttpClient : HttpClient
     {
         
-        public ArbiterHttpClient()
+        public ArbiterHttpClient() : this(new HttpClientHandler()) { }
+
+        public ArbiterHttpClient(HttpMessageHandler handler) : base(handler)
         {
-            // Keep the trailing slash so relative endpoint names preserve any URL prefix.
-            this.BaseAddress = new Uri(Configuration.ArbiterBaseUrl.TrimEnd('/') + "/");
-            this.DefaultRequestHeaders.Add("PJX-ArbiterAUTH", Configuration.ArbiterAuthorization);
+            // Preserve a configured URL prefix when adding relative endpoint names.
+            BaseAddress = new Uri(Configuration.ArbiterBaseUrl.TrimEnd('/') + "/");
+            DefaultRequestHeaders.Add("PJX-ArbiterAUTH", Configuration.ArbiterAuthorization);
         }
-        public async Task<bool> StartGameServer(StartGameServerRequest request)
+
+        public async Task<bool> StartGameServer(StartGameServerRequest request, CancellationToken cancellationToken = default)
         {
-            var result = await this.PostAsync("start-game-server", new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json"));
-            return result.IsSuccessStatusCode;
+            using var content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            using var response = await PostAsync("start-game-server", content, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            return true;
         }
+
         public async Task<bool> EvictPlayer(EvictPlayerRequest request)
         {
-            /*
-                This is temporary because the JSON doesnt format well
-            */
-            var jsonRequest = $"{{ \"gameId\": \"{request.gameId}\", \"userId\": {request.userId}, \"messageVersionId\": {request.messageVersionId} }}";
-            var result = await this.PostAsync("evict-player", new StringContent(jsonRequest, Encoding.UTF8, "application/json"));
-            return result.IsSuccessStatusCode;
+            using var content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            using var response = await PostAsync("evict-player", content);
+            response.EnsureSuccessStatusCode();
+            return true;
         }
+
         public async Task<bool> KillGameServer(KillGameServerRequest request, CancellationToken cancellationToken)
         {
-            var content = new StringContent(
-                JsonSerializer.Serialize(request),
-                Encoding.UTF8,
-                "application/json");
-
-            var result = await this.PostAsync("kill-game-server", content, cancellationToken);
-            return result.IsSuccessStatusCode;
+            using var content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            using var response = await PostAsync("kill-game-server", content, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            return true;
         }
         public static EvictPlayerRequest CreateEvictPlayerRequest(Guid jobId, long userId)
         {
@@ -116,7 +118,11 @@ public partial class GameServerService : ServiceBase
 
     private const string ClientJoinTicketType = "GameJoinTicketV1.1";
     private const string ServerJoinTicketType = "GameServerTicketV2";
-    private static ArbiterHttpClient arbiterClient = new ArbiterHttpClient();
+    private static readonly ArbiterHttpClient SharedArbiterClient = new();
+    private readonly ArbiterHttpClient arbiterClient;
+
+    public GameServerService() : this(SharedArbiterClient) { }
+    public GameServerService(ArbiterHttpClient arbiterClient) { this.arbiterClient = arbiterClient; }
     private static string jwtKey { get; set; } = string.Empty;
     private static EasyJwt jwt { get; } = new();
     private static Random RandomComponent = new Random();
@@ -276,41 +282,6 @@ public partial class GameServerService : ServiceBase
     //     await PostToGameServer<GameServerEmptyResponse>(ipAddress, port, "startGame",
     //         new List<dynamic> {placeId, gameServerId, gameServerPort});
     // }
-
-    public async Task ShutDownServerAsync(Guid serverId)
-    {
-        using var serverCreationLock = await Cache.redLock.CreateLockAsync($"CloseGameServer:{serverId.ToString()}", TimeSpan.FromSeconds(10));
-        if (!serverCreationLock.IsAcquired)
-        {
-            // Silence.
-            return;
-        }
-        try
-        {
-            Stopwatch stopwatch = new Stopwatch();
-            stopwatch.Start();
-
-            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
-            {
-                await arbiterClient.KillGameServer(
-                    ArbiterHttpClient.CreateKillGameServerRequest(serverId),
-                    cts.Token);
-            }
-
-            Console.WriteLine($"Gameserver {serverId} was successfully closed in {stopwatch.ElapsedMilliseconds}ms!");
-
-            await DeleteGameServer(serverId);
-        }
-        catch (OperationCanceledException)
-        {
-            Console.Error.WriteLine($"KillGameServer timed out after 15 seconds for server {serverId}.");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Error shutting down server {serverId}: {ex}");
-        }
-    }
-
 
     public static void RemoveAllPlayersFromPlaceId(long placeId)
     {
@@ -574,7 +545,7 @@ public partial class GameServerService : ServiceBase
     public async Task<GameServerDb> GetGameServer(Guid jobId)
     {
         return await db.QueryFirstOrDefaultAsync<GameServerDb>(
-            "SELECT id, asset_id as assetId, port, updated_at as updatedAt, status, type FROM asset_server WHERE id = :id::uuid",
+            "SELECT id, asset_id as assetId, COALESCE(proxy_port, port) as port, updated_at as updatedAt, status, type FROM asset_server WHERE id = :id::uuid",
             new
             {
                 id = jobId,
@@ -584,7 +555,7 @@ public partial class GameServerService : ServiceBase
     public async Task<bool> IsPortTaken(int port)
     {
         int result = await db.QueryFirstOrDefaultAsync<int>(
-            "SELECT port FROM asset_server WHERE port = :gsport",
+            "SELECT port FROM asset_server WHERE port = :gsport OR rcc_port = :gsport OR proxy_port = :gsport",
             new
             {
                 gsport = port,
@@ -594,7 +565,7 @@ public partial class GameServerService : ServiceBase
     public async Task<IEnumerable<GameServerDb>> GetGameServersForPlace(long placeId, int? matchmaking = 1)
     {
         var result = await db.QueryAsync<GameServerDb>(
-            "SELECT id, asset_id as assetId, port, updated_at as updatedAt, status, type FROM asset_server WHERE asset_id = :assetid AND type = :type",
+            "SELECT id, asset_id as assetId, COALESCE(proxy_port, port) as port, updated_at as updatedAt, status, type FROM asset_server WHERE asset_id = :assetid AND type = :type",
             new
             {
                 assetid = placeId,
@@ -603,97 +574,6 @@ public partial class GameServerService : ServiceBase
         if (result == null)
             return new List<GameServerDb>();
         return result;
-    }
-
-    public async Task<GameServerGetOrCreateResponse> GetServerForPlace(PlaceEntry placeInfo, int matchmaking)
-    {
-        var gameServers = await GetGameServersForPlace(placeInfo.placeId, matchmaking);
-        foreach (var server in gameServers)
-        {
-            var currentPlayerCount = await GetGameServerPlayers(server.id);
-
-            // if the server is full continue the search for a good one
-            if (currentPlayerCount.Count() >= placeInfo.maxPlayerCount)
-            {
-                continue;
-            }
-            // if the server is older than 5 minutes then shutdown the server
-            if (server.updatedAt.AddMinutes(5) < DateTime.UtcNow)
-            {
-                await ShutDownServerAsync(server.id);
-                continue;
-            }
-
-            //dict check!!! if it doesnt contain it lets kill it!
-            //if (!currentGameServerPorts.ContainsKey(jobid))
-            //{
-                //_ = ShutDownServerAsync(jobid);
-                //continue;
-            //}
-
-            // we found a server to join or.... its loading depending
-            return new GameServerGetOrCreateResponse()
-            {
-                job = server.id,
-                ip = Configuration.GameServerIp,
-                port = server.port,
-                status = server.status == ServerStatus.Ready ? JoinStatus.Joining : JoinStatus.Loading
-            };
-            
-        }
-
-        int mainRCCPort = RandomComponent.Next(30000, 40000);
-        int networkServerPort =  RandomComponent.Next(50000, 60000);;
-        int proxyPort = 0;
-        do
-        {
-            proxyPort = RandomComponent.Next(7000, 8000);
-            if (!await IsPortTaken(proxyPort))
-                break;
-            
-        } while (true);
-
-        Guid jobId = Guid.NewGuid();
-        // We need to create a lock to prevent multiple requests from creating the same game server
-        using var serverCreationLock = await Cache.redLock.CreateLockAsync($"CreateGameServerV1:{placeInfo.placeId}", TimeSpan.FromSeconds(3));
-        if (!serverCreationLock.IsAcquired)
-        {
-            return new GameServerGetOrCreateResponse
-            {
-                status = JoinStatus.Loading,
-            };
-        }
-
-        _ = Task.Run(async () => await StartGameServer(placeInfo, mainRCCPort, networkServerPort, proxyPort, jobId, matchmaking));
-
-        await db.ExecuteAsync(
-            "INSERT INTO asset_server (id, asset_id, ip, port, server_connection, type) VALUES (:id::uuid, :asset_id, :ip, :port, :server_connection, :type)",
-        new
-        {
-            id = jobId,
-            asset_id = placeInfo.placeId,
-            ip = Configuration.GameServerIp,
-            port = networkServerPort,
-            server_connection = $"{Configuration.GameServerIp}:{networkServerPort}",
-            type = matchmaking
-        });
-
-        return new GameServerGetOrCreateResponse()
-        {
-            job = jobId,
-            ip = Configuration.GameServerIp,
-            port = proxyPort,
-            status = JoinStatus.Waiting
-        };
-    }
-
-
-    public async Task<string> StartGameServer(PlaceEntry placeInfo, int RCCPort, int networkServerPort, int proxyPort, Guid jobId, int matchmaking)
-    {
-        Console.WriteLine("Starting Gameserver");
-        var request = ArbiterHttpClient.CreateGameServerRequest(placeInfo, RCCPort, networkServerPort, proxyPort, jobId, matchmaking);
-        await arbiterClient.StartGameServer(request);
-        return "OK";
     }
 
     [Obsolete]

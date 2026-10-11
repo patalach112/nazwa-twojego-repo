@@ -109,6 +109,13 @@ payments; a late Leave or deletion from a former job does not clear a newer
 session in the same place. Shutdown/delete are idempotent **notifications**, not
 a recursive call into the process that is reporting its own shutdown.
 
+Launches now commit a Loading job and reserve the host's network, SOAP and proxy
+ports **before** contacting the arbiter. Retried joins reuse the pending job, and
+ready joins keep the same proxy port. A rejected start is cleaned up only after
+the arbiter confirms termination; an uncertain kill leaves a Closing reservation
+that cannot be revived by a heartbeat and can be retried safely. The launcher
+regressions use a substitute HTTP handler plus real Postgres/Redis, not RCC.
+
 Run all database migrations before enabling reports. The new reporting migration
 refuses duplicate jobs, multiple active memberships for one user and orphan
 memberships instead of silently throwing data away. Reconcile any reported

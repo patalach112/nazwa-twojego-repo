@@ -47,6 +47,7 @@ public sealed class ReportingFixture : IAsyncLifetime
         Configuration.ArbiterAuthorization = ArbiterSecret;
         Configuration.UserAgentBypassSecret = "unused-test-user-agent-secret";
         Configuration.BaseUrl = "http://reporting.test";
+        Configuration.GameServerIp = "127.0.0.1";
         ApplicationGuardMiddleware.Configure("a-different-application-guard-secret");
         CsrfMiddleware.Configure(Guid.NewGuid().ToString());
         server = new TestServer(new WebHostBuilder().ConfigureServices(services =>
