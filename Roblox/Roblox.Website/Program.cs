@@ -58,6 +58,20 @@ Roblox.Configuration.GameServerIp = configuration.GetSection("GameServerIp").Val
 Roblox.Configuration.UserAgentBypassSecret = configuration.GetSection("UserAgentBypassSecret").Value!;
 Roblox.Configuration.VerificationSecret = configuration.GetSection("VerificationSecret").Value!;
 Roblox.Configuration.LuaScriptsDirectory = configuration.GetSection("Directories:RCCLuaScripts").Value!;
+
+// these folders get handed straight to a PhysicalFileProvider or get file names glued
+// onto them, and both of those explode when the folder isn't there yet. windows doesn't
+// care, linux does, so create them instead of dying on a fresh install
+foreach (var requiredDirectory in new[]
+         {
+             Roblox.Configuration.AssetDirectory,
+             Roblox.Configuration.StorageDirectory,
+             Roblox.Configuration.ThumbnailsDirectory,
+             Roblox.Configuration.GroupIconsDirectory,
+         })
+{
+    Directory.CreateDirectory(requiredDirectory);
+}
 IConfiguration gameServerConfig = new ConfigurationBuilder().AddJsonFile("game-servers.json").Build();
 Roblox.Configuration.GameServerIpAddresses = gameServerConfig.GetSection("GameServers").Get<IEnumerable<GameServerConfigEntry>>()!;
 Roblox.Configuration.AssetValidationServiceUrl =
@@ -135,7 +149,8 @@ var prepareResponseForCache = (StaticFileResponseContext ctx) =>
 };
 app.UseStaticFiles(new StaticFileOptions
 {
-    FileProvider = new PhysicalFileProvider(Roblox.Configuration.PublicDirectory + "css/roblox/"),
+    // folder in the repo is css/Roblox, it only "worked" with a lowercase r on windows
+    FileProvider = new PhysicalFileProvider(Roblox.Configuration.PublicDirectory + "css/Roblox/"),
     RequestPath = "/css",
     OnPrepareResponse = prepareResponseForCache,
 });
