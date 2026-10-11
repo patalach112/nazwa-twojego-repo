@@ -229,7 +229,7 @@ app.UseExceptionHandler("/error");
 RenderingHandler.Configure();
 SessionMiddleware.Configure(configuration.GetSection("Jwt:Sessions").Value!);
 app.UseTimerMiddleware(); // Must always be last
-Roblox.Services.Signer.SignService.Setup();
+Roblox.Services.Signer.SignService.Setup(builder.Environment.ContentRootPath);
 _ = Task.Run(async () =>
 {
     using var assets = Roblox.Services.ServiceProvider.GetOrCreate<AssetsService>();

@@ -32,6 +32,7 @@
          as you run the published build instead of "dotnet run" -->
     <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('appsettings.json')" />
     <None Include="game-servers.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('game-servers.json')" />
+    <None Update="Keys/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
