@@ -130,7 +130,9 @@ public partial class GameServerService : ServiceBase
     public static Dictionary<string, int> unreadyGameServers = new Dictionary<string, int>(); // Process, network server port
     public static void Configure(string newJwtKey)
     {
-        jwtKey = "6EwhjPzM9Kf9pPRgYyCnhmM3v6j9d95vCg+NBeUThw49dcLLs1BvNnErFItWCEjS0e85QaYRcE38sTgkRg";
+        if (string.IsNullOrWhiteSpace(newJwtKey) || newJwtKey.Length < 32)
+            throw new ArgumentException("The game-ticket JWT key must contain at least 32 characters", nameof(newJwtKey));
+        jwtKey = newJwtKey;
     }
 
     private string HashIpAddress(string hashedIpAddress)

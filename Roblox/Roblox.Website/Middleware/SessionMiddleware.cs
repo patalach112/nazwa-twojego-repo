@@ -42,6 +42,8 @@ public class SessionMiddleware
 
     public static void Configure(string newJwtKey)
     {
+        if (string.IsNullOrWhiteSpace(newJwtKey) || newJwtKey.Length < 32)
+            throw new ArgumentException("The session JWT key must contain at least 32 characters", nameof(newJwtKey));
         if (cookieJwtKey != null) throw new Exception("Already configured");
         cookieJwtKey = newJwtKey;
     }

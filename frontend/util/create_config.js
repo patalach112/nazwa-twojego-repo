@@ -8,11 +8,24 @@ const main = () => {
     console.error('config.json already exists at this path:', configPath, '\n\nIf you want to create a fresh config, manually delete or move this file first, then run this script again.');
     return
   }
+  let baseUrl = 'http://localhost:5000';
+  const backend = { csrfKey: crypto.randomBytes(64).toString('base64') };
+  if (process.env.WEBSITE_CONFIG_PATH) {
+    const website = JSON.parse(fs.readFileSync(process.env.WEBSITE_CONFIG_PATH, 'utf8'));
+    const setting = name => Object.entries(website).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+    baseUrl = String(setting('BaseUrl')).replace(/\/+$/, '');
+    const parsed = new URL(baseUrl);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password)
+      throw new Error('The website BaseUrl must be an HTTP(S) URL without embedded credentials');
+    const authorization = setting('Authorization');
+    if (typeof authorization !== 'string' || !authorization)
+      throw new Error('The website needs a nonempty Authorization before frontend config can be generated');
+    // Next exposes only publicRuntimeConfig to browsers. Keep the credential here.
+    backend.authorization = authorization;
+  }
   fs.writeFileSync(configPath, JSON.stringify({
     "serverRuntimeConfig": {
-      backend: {
-        csrfKey: crypto.randomBytes(64).toString('base64'),
-      }
+      backend
     },
     "publicRuntimeConfig": {
       "backend": {
@@ -36,8 +49,8 @@ const main = () => {
         // points at the local .NET website by default. the proxy route only forwards
         // to urls on the same domain as baseUrl, so keep these two in sync when you
         // put this on a real domain (e.g. https://pekora.zip + https://pekora.zip/apisite/{0}{1})
-        "baseUrl": "http://localhost:5000",
-        "apiFormat": "http://localhost:5000/apisite/{0}{1}"
+        "baseUrl": baseUrl,
+        "apiFormat": baseUrl + "/apisite/{0}{1}"
       }
     },
   }));

@@ -17,9 +17,12 @@ domain.SetData("REGEX_DEFAULT_MATCH_TIMEOUT", TimeSpan.FromSeconds(5));
 
 IConfiguration configuration = new ConfigurationBuilder()
     .AddJsonFile("appsettings.json")
+    .AddJsonFile("local-secrets.json", optional: true)
     .Build();
 
 var builder = WebApplication.CreateBuilder(args);
+var gameJwtKey = Roblox.Website.Lib.ConfigurationSecrets.Require(configuration, "Jwt:Games");
+var sessionJwtKey = Roblox.Website.Lib.ConfigurationSecrets.Require(configuration, "Jwt:Sessions");
 
 // DB
 Roblox.Services.Database.Configure(configuration.GetSection("Postgres").Value!);
@@ -79,7 +82,7 @@ Roblox.Configuration.AssetValidationServiceUrl =
     configuration.GetSection("AssetValidation:BaseUrl").Value!;
 Roblox.Configuration.AssetValidationServiceAuthorization =
     configuration.GetSection("AssetValidation:Authorization").Value!;
-GameServerService.Configure(string.Join(Guid.NewGuid().ToString(), new int [16].Select(_ => Guid.NewGuid().ToString()))); // More TODO: If we every load balance, this will break
+GameServerService.Configure(gameJwtKey);
 Roblox.Configuration.PackageShirtAssetId = long.Parse(configuration.GetSection("PackageShirtAssetId").Value!);
 Roblox.Configuration.PackagePantsAssetId = long.Parse(configuration.GetSection("PackagePantsAssetId").Value!);
 Roblox.Libraries.TwitterApi.TwitterApi.Configure(configuration.GetSection("Twitter:Bearer").Value!);
@@ -227,7 +230,7 @@ app.UseExceptionHandler("/error");
 //CommandHandler.Configure(configuration.GetSection("Render:BaseUrl").Value, configuration.GetSection("Render:Authorization").Value); // will be removed soon
 
 RenderingHandler.Configure();
-SessionMiddleware.Configure(configuration.GetSection("Jwt:Sessions").Value!);
+SessionMiddleware.Configure(sessionJwtKey);
 app.UseTimerMiddleware(); // Must always be last
 Roblox.Services.Signer.SignService.Setup(builder.Environment.ContentRootPath);
 _ = Task.Run(async () =>

@@ -14,6 +14,7 @@ WEBSITE = Path("Roblox/Roblox.Website")
 CONFIGS = (
     Path("api/config.json"),
     WEBSITE / "appsettings.json",
+    WEBSITE / "local-secrets.json",
     WEBSITE / "game-servers.json",
     Path("game-arbiter/config.json"),
     Path("game-server/config.json"),
@@ -28,6 +29,7 @@ class SetupTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         for name in (
             "scripts/setup.sh",
+            "scripts/provision_website_secrets.py",
             "Roblox/Roblox.Website/appsettings.example.json",
             "Roblox/Roblox.Website/game-servers.example.json",
             "game-arbiter/config.example.json",
@@ -75,7 +77,14 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(server["authorization"], website["GameServerAuthorization"])
         self.assertEqual(server["websiteBotAuth"], website["BotAuthorization"])
         secrets = [website[key] for key in ("ArbiterAuthorization", "GameServerAuthorization", "BotAuthorization")]
-        self.assertEqual(len(set(secrets)), 3)
+        secrets += [website[key] for key in ("RccAuthorization", "Authorization", "VerificationSecret", "UserAgentBypassSecret")]
+        jwt = self.read(WEBSITE / "local-secrets.json")["Jwt"]
+        secrets += [jwt["Sessions"], jwt["Games"]]
+        self.assertEqual(len(set(secrets)), 9)
+        frontend = self.read("frontend/config.json")
+        self.assertEqual(frontend["serverRuntimeConfig"]["backend"]["authorization"], website["Authorization"])
+        for secret in secrets:
+            self.assertNotIn(secret, json.dumps(frontend["publicRuntimeConfig"]))
         for secret in secrets:
             self.assertRegex(secret, r"^[0-9a-f]{64}$")
             self.assertNotIn(secret, result.stdout + result.stderr)
@@ -160,6 +169,37 @@ class SetupTest(unittest.TestCase):
                 self.assertIn(key + " does not match", result.stderr)
                 self.assertEqual(before, self.snapshot())
 
+    def test_existing_jwt_keys_are_not_rotated_or_shadowed(self):
+        website = self.read(WEBSITE / "appsettings.example.json")
+        website.update({"ArbiterAuthorization": "existing-arbiter-secret", "GameServerAuthorization": "existing-game-secret", "BotAuthorization": "existing-bot-secret"})
+        website["JWT"] = {"sessions": "a" * 64, "games": "b" * 64}
+        website.pop("Jwt")
+        self.write(WEBSITE / "appsettings.json", website)
+        before = (self.root / WEBSITE / "appsettings.json").read_bytes()
+        self.success(self.run_setup())
+        self.assertEqual(before, (self.root / WEBSITE / "appsettings.json").read_bytes())
+        self.assertFalse((self.root / WEBSITE / "local-secrets.json").exists())
+
+    def test_incomplete_existing_secrets_fail_without_rewriting_them(self):
+        self.success(self.run_setup())
+        self.write(WEBSITE / "local-secrets.json", {"Jwt": {"Sessions": "private-existing-session-key-" + "x" * 32}})
+        before = self.snapshot()
+        result = self.run_setup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing Jwt:Games", result.stderr)
+        self.assertEqual(before, self.snapshot())
+
+    def test_conflicting_jwt_keys_fail_without_losing_existing_sessions(self):
+        self.success(self.run_setup())
+        website = self.read(WEBSITE / "appsettings.json")
+        website["Jwt"]["Sessions"] = "a" * 64
+        self.write(WEBSITE / "appsettings.json", website)
+        before = self.snapshot()
+        result = self.run_setup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("conflicts with appsettings.json", result.stderr)
+        self.assertEqual(before, self.snapshot())
+
     def test_connection_overrides_reach_both_website_and_migrations(self):
         self.success(self.run_setup(
             DB_HOST="database.internal", DB_PORT="6543", DB_USER="pekora_user",
@@ -172,6 +212,9 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(website["Postgres"], "Host=database.internal;Port=6543;Database=pekora_test;Username=pekora_user;Password=private-password")
         self.assertEqual(website["Redis"], "redis.internal:6380")
         self.assertEqual(website["ArbiterBaseUrl"], "http://arbiter.internal:4310/")
+        frontend = self.read("frontend/config.json")["publicRuntimeConfig"]["backend"]
+        self.assertEqual(frontend["baseUrl"], "https://website.example")
+        self.assertEqual(frontend["apiFormat"], "https://website.example/apisite/{0}{1}")
         self.assertEqual(self.read("game-server/config.json")["baseUrl"], website["BaseUrl"])
 
 

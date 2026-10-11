@@ -131,7 +131,9 @@ dotnet test Roblox/Roblox.GameServer.Test/Roblox.GameServer.Test.csproj --config
 The **Game server reports** CI job provisions disposable Postgres/Redis services,
 checks the complete migration chain and rollback, then runs HTTP/lifecycle tests
 with real database and cache operations. The focused ASP.NET TestHost includes
-the CSRF, application guard and frontend proxy bypasses. This is **not** a full
+the CSRF, application guard and frontend proxy bypasses. Synthetic-key tests also
+verify legacy/2048-bit signatures, portable key paths and the configured JWT keys;
+they do not read the original leaked private keys. This is **not** a full
 website startup test, an RCC test or proof that a real client can join.
 
 # HOW TO SETUP
@@ -167,14 +169,30 @@ docker compose up -d                        # postgres + redis
 
 `setup.sh` accepts `DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME REDIS BASE_URL
 ARBITER_BASE_URL` as env vars for **new** configs. It does not rewrite existing
-files. A fresh website gets separate random arbiter, game-server and bot secrets;
-the generated service configs receive the matching website values:
+files. A fresh website gets distinct random service, web-authorization, RCC,
+verification and user-agent secrets. The generated service configs receive the
+matching website values:
 
 | Service config | Website setting |
 | --- | --- |
 | `game-arbiter/config.json`: `authorization` | `ArbiterAuthorization` |
 | `game-server/config.json`: `authorization` | `GameServerAuthorization` |
 | `game-server/config.json`: `websiteBotAuth` | `BotAuthorization` |
+
+JWT keys are provisioned in the ignored, owner-readable
+`Roblox/Roblox.Website/local-secrets.json`. It supplies independent `Jwt:Sessions`
+and `Jwt:Games` keys without changing an older `appsettings.json`. The website
+loads this overlay and fails early with an actionable error if a key is missing,
+short or still an example. Rerun `./scripts/setup.sh` when upgrading an older
+checkout. Existing valid JWT keys are reused; conflicting keys are reported, not
+rotated, so rerunning setup does not log everyone out.
+
+Fresh frontend configs copy the website's `Authorization` only into
+`serverRuntimeConfig.backend.authorization` and use its `BaseUrl` for the public
+API URLs. No secret goes into `publicRuntimeConfig`. Existing frontend configs
+are preserved; if necessary, add the private backend authorization manually.
+Other example authentication secrets in an **existing** website config are not
+automatically replaced: review them before exposing the site publicly.
 
 If you ran the older setup script, `ArbiterAuthorization` may still be `change-me`.
 Set it to a private random secret in the existing `appsettings.json` before
@@ -220,6 +238,8 @@ legacy game-server expecting it to supply the missing Linux RCC runtime.
     - `BaseUrl` - `http://localhost:5000` for local dev.
     - `ArbiterBaseUrl` - `http://127.0.0.1:4310/` for the local arbiter, or the URL of the machine running it.
     - `ArbiterAuthorization`, `GameServerAuthorization`, `BotAuthorization` - private secrets, shared with the corresponding service configs (see the table above).
+    - `Jwt:Sessions`, `Jwt:Games` - independent persistent secrets of at least 32 characters. Run `python3 scripts/provision_website_secrets.py Roblox/Roblox.Website` from the repo root to provision missing keys without rewriting this config.
+    - `Authorization`, `RccAuthorization`, `VerificationSecret`, `UserAgentBypassSecret` - replace the example values with private secrets for a manual setup.
     - `OwnerUserId` - **an array**, e.g. `[ 12 ]`. Put your own user id in it after you register (see step 7).
     - `Directories` - **every value must end with a trailing slash**. Pre-filled in the example: `Public` → `api/public/`, `AdminBundle` → `admin/public/`, `XmlTemplates` → `Roblox/Roblox.Libraries/Templates/`, `JsonData` → `Roblox/Roblox.Libraries/Json/`, `ScriptsData` → `Roblox/Roblox.Libraries/StudioScripts/`. The asset/storage/thumbnail/group-icon folders are your own runtime data dirs - create them.
 

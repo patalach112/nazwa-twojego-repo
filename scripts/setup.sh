@@ -85,7 +85,8 @@ cfg["Redis"] = redis
 cfg["BaseUrl"] = base_url
 cfg["ArbiterBaseUrl"] = arbiter_url
 # Each service gets the website's value, not a separately generated secret.
-for key in ("ArbiterAuthorization", "GameServerAuthorization", "BotAuthorization"):
+for key in ("ArbiterAuthorization", "GameServerAuthorization", "BotAuthorization", "RccAuthorization",
+            "Authorization", "VerificationSecret", "UserAgentBypassSecret"):
     cfg[key] = secrets.token_hex(32)
 
 cfg["Directories"].update({
@@ -165,6 +166,9 @@ write_config("game-server", {
 }, ("authorization", "websiteBotAuth"))
 PY
 
+# JWT keys are kept separately so an older appsettings.json remains byte-preserved.
+python3 scripts/provision_website_secrets.py "$WEBSITE"
+
 # data folders the website reads/writes at runtime
 mkdir -p data/assets data/storage data/thumbnails data/group-icons data/economy-chat data/rcc-lua
 
@@ -173,7 +177,7 @@ if [ -f frontend/config.json ]; then
     echo "frontend/config.json already exists, leaving it alone"
 else
     if command -v node >/dev/null 2>&1; then
-        (cd frontend && node ./util/create_config.js)
+        (cd frontend && WEBSITE_CONFIG_PATH="../$WEBSITE/appsettings.json" node ./util/create_config.js)
     else
         echo "node is not installed, skipping frontend/config.json (run util/create_config.js later)"
     fi
@@ -188,5 +192,5 @@ echo "  3. run the website                     (cd $WEBSITE && dotnet run)"
 echo "  4. run the frontend                    (cd frontend && npm i && npm run dev)"
 echo "  5. start the arbiter separately        (cd game-arbiter && npm start)"
 echo
-echo "game servers still need a compatible RCC launcher and the missing /gs/* handlers."
+echo "game servers still need a compatible RCC launcher; /gs/* callbacks are now implemented."
 echo "the generated RCC paths target Windows binaries, not a working Debian game stack."
