@@ -2,11 +2,12 @@
 
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 const { parse } = require('pg-connection-string');
 
 if (!process.env.TEST_DATABASE_URL) throw new Error('TEST_DATABASE_URL must point to an isolated empty *_tests database');
 const connection = parse(process.env.TEST_DATABASE_URL);
-if (!connection.database.endsWith('_tests')) throw new Error('Refusing to test migrations against a database not ending in _tests');
+if (!connection.database || !connection.database.endsWith('_tests')) throw new Error('Refusing to test migrations against a database not ending in _tests');
 const knex = require('knex')({ client: 'pg', connection, migrations: { directory: path.resolve(__dirname, '../migrations') } });
 const migrationName = '20261011000000_addGameServerReportingState.js';
 const migration = require('../migrations/' + migrationName);
@@ -16,10 +17,13 @@ const server = jobId => ({ id: jobId, asset_id: 1, ip: '127.0.0.1', port: jobId 
 
 (async () => {
     await knex.migrate.latest();
-    assert.equal(Number((await knex('knex_migrations').count('* as count').first()).count), 89);
+    const migrationCount = fs.readdirSync(path.resolve(__dirname, '../migrations')).filter(name => name.endsWith('.js')).length;
+    assert.equal(Number((await knex('knex_migrations').count('* as count').first()).count), migrationCount);
     assert.equal(Number((await knex('asset_server').count('* as count').first()).count), 0, 'Use an empty test database');
     const tables = await knex('information_schema.tables').where({ table_schema: 'public', table_type: 'BASE TABLE' }).whereNotIn('table_name', ['knex_migrations', 'knex_migrations_lock']).count('* as count').first();
-    console.log(`All 89 migrations passed; ${tables.count} application tables.`);
+    console.log(`All ${migrationCount} migrations passed; ${tables.count} application tables.`);
+    const [transactionId] = await knex('user_transaction').insert({ type: 101, currency_type: 2, amount: 10, user_id_one: null, user_id_two: null, group_id_one: 1, group_id_two: 2 }).returning('id');
+    await knex('user_transaction').where({ id: transactionId.id || transactionId }).del();
     const columns = await knex('information_schema.columns').where({ table_schema: 'public', table_name: 'asset_server' }).select('column_name');
     for (const name of ['status', 'type', 'ping', 'fps']) assert(columns.some(c => c.column_name === name));
 
