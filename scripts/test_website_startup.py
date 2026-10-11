@@ -83,7 +83,11 @@ def main():
                 for value in values:
                     if value:
                         text = text.replace(value, "[redacted]")
-                print("\n".join(text.splitlines()[-50:]))
+                diagnostics = "\n".join(text.splitlines()[-50:])
+                print(diagnostics)
+                if os.environ.get("GITHUB_ACTIONS") == "true":
+                    annotation = diagnostics.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                    print('::error title=Website startup regression::' + annotation)
                 raise
             finally:
                 if process.poll() is None:
