@@ -65,3 +65,16 @@ jobs:
                   text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
                   print('::error title=Game server regression::' + text)
           PY
+      - name: Generate isolated website startup configs
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_NAME: pekora_reporting_tests
+          REDIS: 127.0.0.1:6379
+        run: ./scripts/setup.sh
+      - name: Smoke-test the complete Linux website startup
+        env:
+          WEBSITE_STARTUP_TEST: "1"
+        run: python3 scripts/test_website_startup.py

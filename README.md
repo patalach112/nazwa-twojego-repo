@@ -140,8 +140,12 @@ checks the complete migration chain and rollback, then runs HTTP/lifecycle tests
 with real database and cache operations. The focused ASP.NET TestHost includes
 the CSRF, application guard and frontend proxy bypasses. Synthetic-key tests also
 verify legacy/2048-bit signatures, portable key paths and the configured JWT keys;
-they do not read the original leaked private keys. This is **not** a full
-website startup test, an RCC test or proof that a real client can join.
+they do not read the original leaked private keys. A separate Linux smoke test
+boots the complete website with isolated generated configs, exercises signing-key
+setup and checks authorized/unauthorized `/gs/activity` through the real middleware
+pipeline. It does not start the frontend, validator or RCC, or prove that a real
+client can join. Original signing keys remain compromised despite the portable
+loader fix.
 
 # HOW TO SETUP
 
