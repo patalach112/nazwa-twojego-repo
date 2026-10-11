@@ -60,6 +60,7 @@ public static class Configuration
     public static string BotAuthorization { get; set; }
     public static string RccAuthorization { get; set; }
     public static string ArbiterAuthorization { get; set; }
+    public static string ArbiterBaseUrl { get; set; } = "http://127.0.0.1:4310/";
     public static string GameServerIp { get; set; }
     public static string UserAgentBypassSecret { get; set; }
     public static string VerificationSecret { get; set; }

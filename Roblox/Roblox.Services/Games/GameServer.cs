@@ -26,10 +26,8 @@ public class GameServerService : ServiceBase
         
         public ArbiterHttpClient()
         {
-            // BaseAddress should be the url to your game-arbiter host itself
-            // i don't really know why pekora's developers decided to hardcode this except for
-            // making a configuration on AppSettings.json (i gotta do that soon)
-            this.BaseAddress = new Uri($"http://gamearbiterserverhere.com/");
+            // Keep the trailing slash so relative endpoint names preserve any URL prefix.
+            this.BaseAddress = new Uri(Configuration.ArbiterBaseUrl.TrimEnd('/') + "/");
             this.DefaultRequestHeaders.Add("PJX-ArbiterAUTH", Configuration.ArbiterAuthorization);
         }
         public async Task<bool> StartGameServer(StartGameServerRequest request)

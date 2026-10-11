@@ -54,6 +54,7 @@ Roblox.Configuration.GameServerAuthorization = configuration.GetSection("GameSer
 Roblox.Configuration.BotAuthorization = configuration.GetSection("BotAuthorization").Value!;
 Roblox.Configuration.RccAuthorization = configuration.GetSection("RccAuthorization").Value!;
 Roblox.Configuration.ArbiterAuthorization = configuration.GetSection("ArbiterAuthorization").Value!;
+Roblox.Configuration.ArbiterBaseUrl = configuration.GetSection("ArbiterBaseUrl").Value ?? "http://127.0.0.1:4310/";
 Roblox.Configuration.GameServerIp = configuration.GetSection("GameServerIp").Value!;
 Roblox.Configuration.UserAgentBypassSecret = configuration.GetSection("UserAgentBypassSecret").Value!;
 Roblox.Configuration.VerificationSecret = configuration.GetSection("VerificationSecret").Value!;
