@@ -2,4 +2,7 @@ obj
 Properties
 appsettings.json
 appsettings.*.json
+# keep the committed template, ignore only real configs
+!appsettings.example.json
 game-servers.json
+!game-servers.example.json

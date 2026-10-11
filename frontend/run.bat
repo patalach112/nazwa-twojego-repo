@@ -1,2 +1,2 @@
-cd C:\goober\prjx-frontend-patches\Project-X-V2\2016-roblox-main
+cd /d "%~dp0"
 npm run start

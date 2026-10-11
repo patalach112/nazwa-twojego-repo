@@ -1,2 +1,2 @@
-cd C:\goober\prjx-frontend-patches\Project-X-V2\Roblox\Roblox.Website
+cd /d "%~dp0"
 dotnet run --configuration Release

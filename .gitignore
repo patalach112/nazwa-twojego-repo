@@ -55,7 +55,6 @@ Roblox/.editorconfig
 /Roblox/.idea/.idea.Roblox/.idea/dataSources
 /Roblox/.idea/.idea.Roblox
 /RCCService2020
-/2016-roblox-main.old
 /22
 /api/public/img/setup
 /game-arbiter
@@ -65,9 +64,6 @@ Roblox/.editorconfig
 /Roblox/.idea
 /game-arbiter
 /22
-/2016-roblox-main.old
-2016-roblox-main/package-lock.json
-2016-roblox-main/package-lock.json
 /game-renderer/dist
 /game-renderer/RCCService
 /RCCService2020.Pekora
@@ -78,3 +74,9 @@ game-renderer/eslint.config.js.old
 /game-renderer/.idea
 /frontend/.next
 /frontend/.idea
+
+# dev.sh log output
+/logs
+
+# runtime data created by scripts/setup.sh (assets, thumbnails, ...)
+/data

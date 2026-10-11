@@ -1,15 +1,18 @@
 # to view logs:
 # sudo journalctl -u AssetValidationServiceV2.service -f
+#
+# example paths below assume you cloned the source to /opt/pekora - change them
+# to wherever your copy actually lives, and change User= to your own user
 [Unit]
 Description=AssetValidationServiceV2
 After=network.service
 
 [Service]
-ExecStart=/home/website/RobloxWeb/services/AssetValidationServiceV2/AssetValidationV2
+ExecStart=/opt/pekora/AssetValidationServiceV2/AssetValidationV2
 LimitNOFILE=900000
 LimitNPROC=900000
 # Required on some systems
-WorkingDirectory=/home/website/RobloxWeb/services/AssetValidationServiceV2/
+WorkingDirectory=/opt/pekora/AssetValidationServiceV2/
 Restart=always
 # Restart service after 1 second if service crashes
 RestartSec=5

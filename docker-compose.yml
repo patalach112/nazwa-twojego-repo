@@ -1,0 +1,40 @@
+# just the two services every part of this source expects to find on localhost.
+# the game servers have their own docker setup, see game-server/docker
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pekora-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pekora
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pekora"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: pekora-redis
+    restart: unless-stopped
+    # the website stores sessions and rate limits here, so please keep persistence on
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:

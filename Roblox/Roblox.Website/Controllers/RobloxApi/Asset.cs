@@ -51,14 +51,13 @@ public class Asset : ControllerBase
 
         // TODO: This endpoint needs to be updated to return a URL to the asset, not the asset itself.
         // The reason for this is so that cloudflare can cache assets without caching the response of this endpoint, which might be different depending on the client making the request (e.g. under 18 user, over 18 user, rcc, etc).
-        if(id == 507766388)
+        if(id == 507766388 || id == 507766666)
         {
-            return PhysicalFile(@"C:\ProjectX\services\Roblox\FixJitter\507766388.rbxm", "application/octet-stream");
+            // these two are shipped with the source in Roblox/FixJitter and copied
+            // next to the binary on build, don't hardcode a path from your own machine here
+            var jitterFile = Path.Combine(AppContext.BaseDirectory, "FixJitter", id + ".rbxm");
+            return PhysicalFile(jitterFile, "application/octet-stream");
         }
-        else if(id == 507766666)
-        {
-            return PhysicalFile(@"C:\ProjectX\services\Roblox\FixJitter\507766666.rbxm", "application/octet-stream");
-        } 
         else if (BlacklistedAssetIds.Contains(id))
         {
             throw new RobloxException(400, 0, "Asset is invalid or does not exist");

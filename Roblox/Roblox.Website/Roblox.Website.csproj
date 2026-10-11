@@ -22,6 +22,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- the fix jitter bundles, used by the asset conversion endpoint. they sit in
+         Roblox/FixJitter in the repo, so drop a copy next to the build output -->
+    <None Include="..\FixJitter\*.rbxm" CopyToOutputDirectory="PreserveNewest" Link="FixJitter\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- the app reads both of these from its working directory, which breaks as soon
+         as you run the published build instead of "dotnet run" -->
+    <None Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('appsettings.json')" />
+    <None Include="game-servers.json" CopyToOutputDirectory="PreserveNewest" Condition="Exists('game-servers.json')" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Roblox.AbuseDetection\Roblox.AbuseDetection.csproj" />
     <ProjectReference Include="..\Roblox.Configuration\Roblox.Configuration.csproj" />
     <ProjectReference Include="..\Roblox.Dto\Roblox.Dto.csproj" />

@@ -1,12 +1,16 @@
-export async function up(knex) {
-  await knex.schema.alterTable('join_application', (table) => {
-    table.integer('referred_by').unsigned().references('id').inTable('users').nullable();
-    // ^ adjust type / references depending on your schema
-  });
-}
+// referred_by on signup applications
+// note: the users table is named "user" in this schema, not "users", and
+// nothing else in here uses real FK constraints - user_id columns are just
+// unsigned bigints, so this follows the same pattern
 
-export async function down(knex) {
-  await knex.schema.alterTable('join_application', (table) => {
-    table.dropColumn('referred_by');
-  });
-}
+exports.up = async (knex) => {
+    await knex.schema.alterTable('join_application', (table) => {
+        table.bigInteger('referred_by').unsigned().nullable().defaultTo(null);
+    });
+};
+
+exports.down = async (knex) => {
+    await knex.schema.alterTable('join_application', (table) => {
+        table.dropColumn('referred_by');
+    });
+};

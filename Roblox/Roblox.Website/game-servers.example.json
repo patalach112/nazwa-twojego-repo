@@ -1,0 +1,11 @@
+{
+    "//": "Copy this file to 'game-servers.json' (same folder). Required - the website reads it on startup and crashes without it.",
+    "//GameServers": "One entry per machine that runs game-server instances.",
+    "GameServers": [
+        {
+            "ip": "127.0.0.1",
+            "domain": "localhost",
+            "maxServerCount": 16
+        }
+    ]
+}

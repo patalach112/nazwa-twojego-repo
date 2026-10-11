@@ -1,6 +1,6 @@
 # Admin
 
-This is the management frontend created with [svelte](https://svelte.dev/), [svelte-routing](https://www.npmjs.com/package/svelte-routing), and [bootstrap v5.0.0-beta1](https://getbootstrap.com/docs/5.0/getting-started/introduction/). Backend-related tasks can be found in the `services/api/src/controllers/admin-api.ts` controller.
+This is the management frontend created with [svelte](https://svelte.dev/), [svelte-routing](https://www.npmjs.com/package/svelte-routing), and [bootstrap v5.0.0-beta1](https://getbootstrap.com/docs/5.0/getting-started/introduction/). Backend-related tasks can be found in the `Roblox/Roblox.Website/Controllers/Internal/AdminApi.cs` controller.
 
 ## Get Started
 
