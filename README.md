@@ -48,6 +48,8 @@ Old guides (including older versions of this file) tell you to look inside a `se
 
 ```
 repo root/
+├── scripts/                  # setup.sh (writes all the configs) and dev.sh (runs the dev stack)
+├── docker-compose.yml        # postgres + redis for local development
 ├── api/                      # legacy api: knex migrations + public/ (css, js, img, admin bundle target)
 ├── Roblox/                   # .NET 6 solution - the real website + api
 │   ├── Roblox.Website/       # main website/api (dotnet run here)
@@ -67,9 +69,9 @@ repo root/
 ## things you need
 
 - <a href="https://nodejs.org/dist/v18.16.1/node-v18.16.1-x64.msi">Node.js</a>, *to run the renderer/build panel*
-- <a href="https://sbp.enterprisedb.com/getfile.jsp?fileid=1258627">PostgreSQL</a>, *for the database*
-- <a href="https://builds.dotnet.microsoft.com/dotnet/Sdk/6.0.412/dotnet-sdk-6.0.412-win-x64.exe">.NET 6.0</a>, *to run the website*
-- <a href="https://go.dev/dl/go1.20.6.windows-amd64.msi">Go</a>, *for asset validation*
+- <a href="https://sbp.enterprisedb.com/getfile.jsp?fileid=1258627">PostgreSQL</a> *(or docker, see below)*
+- <a href="https://dotnet.microsoft.com/download/dotnet/8.0">**.NET 8 SDK**</a>, *to run the website - every project in here targets net8.0, .NET 6 will not build it*
+- <a href="https://go.dev/dl/">Go</a>, *for asset validation (any recent version works)*
 - <a href="https://github.com/redis-windows/redis-windows/releases/download/8.6.2/Redis-8.6.2-Windows-x64-cygwin-with-Service.zip">Redis Server</a> *important*
 
 ## requirements
@@ -78,7 +80,25 @@ repo root/
 - a 10 character long domain that supports both HTTP and HTTPS
 - knowledge on how things like this work (you should have at least some experience with websites and coding to be able to host this. it's really not hard to set up if you know what you're doing.)
 
+## quick start (linux, macOS, WSL)
+
+The .NET website runs fine on linux, you only lose RCC (the game servers) unless you
+run those in docker - `game-server/docker` has a working setup for that.
+
+```bash
+./scripts/setup.sh                          # creates every config file, pointed at your clone
+docker compose up -d                        # postgres + redis
+(cd api && npm i && npx knex migrate:latest) # database schema
+(cd frontend && npm i)                       # frontend deps
+./scripts/dev.sh                             # website + validator + frontend, ctrl+c stops it
+```
+
+`setup.sh` accepts `DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME REDIS BASE_URL` as env
+vars if your database is not the default localhost/pekora one.
+
 ## steps
+
+*(this is the manual version of the quick start above - skip it if you already ran the scripts)*
 
 1. Create a PG user and DB, then create a file called `config.json` in **`api/`** (it is gitignored, so you have to make it yourself). Put this in it (replacing the DB, User, and Pass with your credentials):
 
@@ -96,7 +116,7 @@ repo root/
     }
     ```
 
-2. Install nodejs, go (lang), and dotnet 6. Go into the **`api/`** directory in a terminal and run:
+2. Install nodejs, go (lang), and dotnet 8 (the projects all target net8.0). Go into the **`api/`** directory in a terminal and run:
 
     ```bash
     npm i
@@ -113,6 +133,8 @@ repo root/
     - `Directories` - **every value must end with a trailing slash**. Pre-filled in the example: `Public` → `api/public/`, `AdminBundle` → `admin/public/`, `XmlTemplates` → `Roblox/Roblox.Libraries/Templates/`, `JsonData` → `Roblox/Roblox.Libraries/Json/`, `ScriptsData` → `Roblox/Roblox.Libraries/StudioScripts/`. The asset/storage/thumbnail/group-icon folders are your own runtime data dirs - create them.
 
     Also copy **`game-servers.example.json`** to **`game-servers.json`** in the same folder. The website reads it on startup and **will not boot without it**.
+
+    On linux/macOS `./scripts/setup.sh` writes all of this for you, with the paths already pointing at your clone - it is a lot less error prone than editing json by hand.
 
 4. Still in `Roblox/Roblox.Website/`, run:
 
@@ -175,8 +197,11 @@ repo root/
 
 ## common gotchas
 
-- **Stale paths in scripts.** Some `.bat` files and service files still point at the original author's machine (`C:\goober\prjx-frontend-patches\...`, `/home/website/RobloxWeb/services/...`). Fix them for your own box.
-- **`api/` is legacy** (`api/README.MD`): it is only used for its `public/` folder and migrations. The actual API is the .NET project in `Roblox/Roblox.Website/`.
-- **`game-server/README.md` says "THIS IS OUTDATED, DO NOT USE".** Treat game-server/game-renderer as a starting point, not a finished service.
+- **`game-servers.json` and `appsettings.json` are required**, not optional. Config files are gitignored, so they will never show up after a fresh clone. `./scripts/setup.sh` writes both.
 - **Directories need trailing slashes** - the code concatenates paths like `JsonDataDirectory + "avatar-colors.json"`. Missing slash = crash or missing files.
-- **`game-servers.json` and `appsettings.json` are required**, not optional. Config files are gitignored, so they will never show up after a fresh clone.
+- **Run the website from its own folder** (`Roblox/Roblox.Website`). `appsettings.json` and `game-servers.json` are read from the working directory, so `dotnet run --project ...` from somewhere else will not find them. The published build works too, both json files are copied next to the binary now.
+- **Everything is case sensitive on linux.** The css folder in the repo is `api/public/css/Roblox`, and the code used to ask for `css/roblox` - that only ever worked because windows does not care.
+- **Build the admin at least once** (`cd admin && npm i && npm run build`). `/admin/` reads `admin/public/build/bundle.js`, which does not exist until you build it.
+- **`api/` is legacy** (`api/README.MD`): it is only used for its `public/` folder and migrations. The actual API is the .NET project in `Roblox/Roblox.Website/`.
+- **`game-server/README.md` says "THIS IS OUTDATED, DO NOT USE".** Treat game-server/game-renderer as a starting point, not a finished service. RCC is a windows binary - on linux you have to run it in docker (`game-server/docker`).
+- **There is no game-arbiter in here** (`Notes.md`), you have to write one or players will not be able to join anything.
