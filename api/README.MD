@@ -1,1 +1,1 @@
-This is legacy, it is only used for its public folders and migrations now. For the new api, see `services/RobloxWeb`.
+This is legacy, it is only used for its public folders and migrations now. For the new api, see `Roblox/Roblox.Website`.
