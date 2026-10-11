@@ -48,4 +48,20 @@ jobs:
         working-directory: api
         run: npm run test:migrations
       - name: Test HTTP reports against Postgres and Redis
-        run: dotnet test Roblox/Roblox.GameServer.Test/Roblox.GameServer.Test.csproj --configuration Release --logger "console;verbosity=normal"
+        run: dotnet test Roblox/Roblox.GameServer.Test/Roblox.GameServer.Test.csproj --configuration Release --logger "console;verbosity=normal" --logger "trx;LogFileName=reports.trx" --results-directory "$RUNNER_TEMP/game-report-tests"
+      - name: Annotate failed lifecycle tests
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, xml.etree.ElementTree as ET
+          ns = {'t': 'http://microsoft.com/schemas/VisualStudio/TeamTest/2010'}
+          for path in pathlib.Path(os.environ['RUNNER_TEMP']).glob('game-report-tests/*.trx'):
+              for result in ET.parse(path).findall('.//t:UnitTestResult', ns):
+                  if result.get('outcome') != 'Failed':
+                      continue
+                  message = result.findtext('t:Output/t:ErrorInfo/t:Message', default='No failure details', namespaces=ns)
+                  stack = result.findtext('t:Output/t:ErrorInfo/t:StackTrace', default='', namespaces=ns)
+                  text = (result.get('testName', 'Reporting test') + ': ' + message + '\n' + stack)
+                  text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print('::error title=Game server regression::' + text)
+          PY
