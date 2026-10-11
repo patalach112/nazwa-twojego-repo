@@ -33,9 +33,22 @@ const server = jobId => ({ id: jobId, asset_id: 1, ip: '127.0.0.1', port: jobId 
     assert.equal(created.type, 1);
     await knex('asset_server_player').insert({ server_id: id, user_id: 1, asset_id: 1 });
     await assert.rejects(knex('asset_server_player').insert({ server_id: id, user_id: 1, asset_id: 1 }), /unique/);
-    await assert.rejects(knex('asset_server').insert(server(id)), /unique/);
+    await assert.rejects(knex('asset_server').insert({ ...server(id), port: 51002 }), /unique/);
     await knex('asset_server').where({ id }).del();
     assert.equal(Number((await knex('asset_server_player').count('* as count').first()).count), 0);
+
+    await knex('asset_server').insert({ ...server(id), rcc_port: 34500, proxy_port: 7100 });
+    await assert.rejects(knex('asset_server').insert({ ...server(second), rcc_port: 34500, proxy_port: 7101 }), /unique/);
+    await assert.rejects(knex('asset_server').insert({ ...server(second), rcc_port: 34501, proxy_port: 7100 }), /unique/);
+    await assert.rejects(knex('asset_server').insert({ ...server(second), port: 51000 }), /unique/);
+    await knex('asset_server').del();
+    await knex.migrate.down({ name: '20261011002000_reserveGameServerPorts.js' });
+    await knex('asset_server').insert([server(id), { ...server(second), port: 51000 }]);
+    const portsMigration = require('../migrations/20261011002000_reserveGameServerPorts');
+    await assert.rejects(knex.transaction(trx => portsMigration.up(trx)), /Reconcile duplicate game-server network ports/);
+    await knex('asset_server').del();
+    await knex.migrate.latest();
+    console.log('Port reservations reject collisions, roll back cleanly and do not discard conflicting legacy servers.');
 
     await knex.migrate.down({ name: migrationName });
     await knex('asset_server').insert([server(id), server(second)]);
@@ -44,7 +57,7 @@ const server = jobId => ({ id: jobId, asset_id: 1, ip: '127.0.0.1', port: jobId 
     assert.equal(Number((await knex('asset_server_player').count('* as count').first()).count), 2, 'Conflicts must not be silently deleted');
     await knex('asset_server_player').del();
     await knex('asset_server').del();
-    await knex('asset_server').insert([server(id), server(id)]);
+    await knex('asset_server').insert([server(id), { ...server(id), port: 51002 }]);
     await assert.rejects(knex.transaction(trx => migration.up(trx)), /Reconcile duplicate/);
     await knex('asset_server').del();
     await knex('asset_server_player').insert({ server_id: id, user_id: 1, asset_id: 1 });
