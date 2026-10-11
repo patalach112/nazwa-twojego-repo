@@ -33,8 +33,11 @@ const main = () => {
           avatarPageOutfitCreatedAtAvailable: false,
           catalogDetailsPageOwnersTabEnabled: false,
         },
-        "baseUrl": "https://www.roblox.com",
-        "apiFormat": "https://{0}.roblox.com{1}"
+        // points at the local .NET website by default. the proxy route only forwards
+        // to urls on the same domain as baseUrl, so keep these two in sync when you
+        // put this on a real domain (e.g. https://pekora.zip + https://pekora.zip/apisite/{0}{1})
+        "baseUrl": "http://localhost:5000",
+        "apiFormat": "http://localhost:5000/apisite/{0}{1}"
       }
     },
   }));
