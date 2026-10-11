@@ -15,12 +15,18 @@ var domain = AppDomain.CurrentDomain;
 // Set a timeout interval of 5 seconds.
 domain.SetData("REGEX_DEFAULT_MATCH_TIMEOUT", TimeSpan.FromSeconds(5));
 
+// Source runs use the website folder; published runs may start from elsewhere.
+// Resolve one content root for config, Razor and signing files instead of letting
+// ConfigurationBuilder silently look in the binary folder while the host does not.
+var contentRoot = Directory.GetCurrentDirectory();
+if (!File.Exists(Path.Combine(contentRoot, "appsettings.json")) && File.Exists(Path.Combine(AppContext.BaseDirectory, "appsettings.json")))
+    contentRoot = AppContext.BaseDirectory;
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = contentRoot });
 IConfiguration configuration = new ConfigurationBuilder()
+    .SetBasePath(builder.Environment.ContentRootPath)
     .AddJsonFile("appsettings.json")
     .AddJsonFile("local-secrets.json", optional: true)
     .Build();
-
-var builder = WebApplication.CreateBuilder(args);
 var gameJwtKey = Roblox.Website.Lib.ConfigurationSecrets.Require(configuration, "Jwt:Games");
 var sessionJwtKey = Roblox.Website.Lib.ConfigurationSecrets.Require(configuration, "Jwt:Sessions");
 
@@ -76,7 +82,7 @@ foreach (var requiredDirectory in new[]
 {
     Directory.CreateDirectory(requiredDirectory);
 }
-IConfiguration gameServerConfig = new ConfigurationBuilder().AddJsonFile("game-servers.json").Build();
+IConfiguration gameServerConfig = new ConfigurationBuilder().SetBasePath(builder.Environment.ContentRootPath).AddJsonFile("game-servers.json").Build();
 Roblox.Configuration.GameServerIpAddresses = gameServerConfig.GetSection("GameServers").Get<IEnumerable<GameServerConfigEntry>>()!;
 Roblox.Configuration.AssetValidationServiceUrl =
     configuration.GetSection("AssetValidation:BaseUrl").Value!;
