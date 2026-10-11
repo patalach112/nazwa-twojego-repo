@@ -19,7 +19,7 @@ namespace Roblox.Services;
 
 
 
-public class GameServerService : ServiceBase
+public partial class GameServerService : ServiceBase
 {
     public class ArbiterHttpClient : HttpClient
     {
@@ -117,7 +117,6 @@ public class GameServerService : ServiceBase
     private const string ClientJoinTicketType = "GameJoinTicketV1.1";
     private const string ServerJoinTicketType = "GameServerTicketV2";
     private static ArbiterHttpClient arbiterClient = new ArbiterHttpClient();
-    private static GamesService games = new GamesService();
     private static string jwtKey { get; set; } = string.Empty;
     private static EasyJwt jwt { get; } = new();
     private static Random RandomComponent = new Random();
@@ -209,168 +208,6 @@ public class GameServerService : ServiceBase
         }
 
         return value;
-    }
-
-    public async Task OnPlayerJoin(long userId, long placeId, Guid serverId)
-    {
-        CurrentPlayersInGame.AddOrUpdate(userId, placeId, (key, oldValue) => placeId);
-        await db.ExecuteAsync(
-            "INSERT INTO asset_server_player (asset_id, user_id, server_id) VALUES (:asset_id, :user_id, :server_id::uuid)",
-            new
-            {
-                asset_id = placeId,
-                user_id = userId,
-                server_id = serverId,
-            });
-        await InsertAsync("asset_play_history", new
-        {
-            asset_id = placeId,
-            user_id = userId,
-        });
-        await db.ExecuteAsync("UPDATE asset_place SET visit_count = visit_count + 1 WHERE asset_id = :id", new
-        {
-            id = placeId,
-        });
-        // give ticket to creator
-        await InTransaction(async _ =>
-        {
-            using var assets = ServiceProvider.GetOrCreate<AssetsService>(this);
-            var placeDetails = await assets.GetAssetCatalogInfo(placeId);
-            using var ec = ServiceProvider.GetOrCreate<EconomyService>(this);
-            using var cooldown = ServiceProvider.GetOrCreate<CooldownService>(this);
-            // Per 100 users there is a 1 day cooldown to earn tickets from visits
-            if (await cooldown.TryIncrementBucketCooldown("TicketCreatorPlaceVisit:" + placeId, 100, TimeSpan.FromDays(1)))
-            {
-                if (placeDetails.creatorType == CreatorType.Group)
-                {
-                    await InsertAsync("user_transaction", new
-                    {
-                        amount = 10,
-                        currency_type = CurrencyType.Tickets,
-                        user_id_one = (long?)null,
-                        user_id_two = userId,
-                        group_id_one = placeDetails.creatorTargetId,
-                        type = PurchaseType.PlaceVisit,
-                        // store id of the game as well
-                        asset_id = placeId,
-                    });
-                }
-                else
-                {
-                    if (placeDetails.creatorTargetId == userId)
-                    {
-                        return 0;
-                    }
-                    await ec.IncrementCurrency(CreatorType.User, placeDetails.creatorTargetId, CurrencyType.Tickets, 10);
-                    await InsertAsync("user_transaction", new
-                    {
-                        amount = 10,
-                        currency_type = CurrencyType.Tickets,
-                        user_id_one = placeDetails.creatorTargetId,
-                        user_id_two = userId,
-                        type = PurchaseType.PlaceVisit,
-                        // store id of the game as well
-                        asset_id = placeId,
-                    });
-                    /* 
-                        Homestead = 6
-                        Bricksmith = 7
-                    */
-                    using var accountService = ServiceProvider.GetOrCreate<AccountInformationService>(this);
-                    var badges = await accountService.GetUserBadges(placeDetails.creatorTargetId);
-                    switch (await games.GetTotalVisitsFromUser(placeDetails.creatorTargetId))
-                    {
-                        case 100:
-                            if (badges.Any(b => b.id == 6))
-                            {
-                                return 0;
-                            }
-                            await db.ExecuteAsync("INSERT INTO user_badge (user_id, badge_id) VALUES (:user_id, :badge_id)", new
-                            {
-                                user_id = placeDetails.creatorTargetId,
-                                badge_id = 6,
-                            });
-                            break;
-                        case 1000:
-                            if (badges.Any(b => b.id == 7))
-                            {
-                                return 0;
-                            }
-                            await db.ExecuteAsync("INSERT INTO user_badge (user_id, badge_id) VALUES (:user_id, :badge_id)", new
-                            {
-                                user_id = placeDetails.creatorTargetId,
-                                badge_id = 7,
-                            });
-                            break;
-                        default:
-                            break;
-                    }
-                }
-            }
-
-
-            return 0;
-        });
-    }
-
-    public async Task OnPlayerLeave(long userId, long placeId, Guid serverId)
-    {
-        CurrentPlayersInGame.TryRemove(userId, out _);
-
-        await db.ExecuteAsync(
-            "DELETE FROM asset_server_player WHERE user_id = :user_id AND server_id = :server_id::uuid", new
-            {
-                server_id = serverId,
-                user_id = userId,
-            });
-        Console.WriteLine("deleted from db line 195 onplayerleave");
-        var latestSession = await db.QuerySingleOrDefaultAsync<AssetPlayEntry>(
-            "SELECT id, created_at as createdAt FROM asset_play_history WHERE user_id = :user_id AND asset_id = :asset_id AND ended_at IS NULL ORDER BY asset_play_history.id DESC LIMIT 1",
-            new
-            {
-                user_id = userId,
-                asset_id = placeId,
-            });
-        if (latestSession != null)
-        {
-            await db.ExecuteAsync("UPDATE asset_play_history SET ended_at = now() WHERE id = :id", new
-            {
-                id = latestSession.id,
-            });
-
-            if (latestSession.createdAt.Year != DateTime.UtcNow.Year) return;
-
-            var playTimeMinutes = (long)Math.Truncate((DateTime.UtcNow - latestSession.createdAt).TotalMinutes);
-            var earnedTickets = Math.Min(playTimeMinutes * 10, 60); // temp cap, might reduce in the future?
-            // cap is 10k tickets per 12 hours (about 1k robux)
-            const long maxEarningsPerPeriod = 10000;
-            using (var ec = ServiceProvider.GetOrCreate<EconomyService>(this))
-            {
-                var earningsToday =
-                    await ec.CountTransactionEarningsOfType(userId, PurchaseType.PlayingGame, null, TimeSpan.FromHours(12));
-
-                if (earningsToday >= maxEarningsPerPeriod)
-                    return;
-            }
-
-            await InTransaction(async _ =>
-            {
-                using var ec = ServiceProvider.GetOrCreate<EconomyService>(this);
-                await ec.IncrementCurrency(CreatorType.User, userId, CurrencyType.Tickets, earnedTickets);
-                await InsertAsync("user_transaction", new
-                {
-                    amount = earnedTickets,
-                    currency_type = CurrencyType.Tickets,
-                    user_id_one = userId,
-                    user_id_two = 1,
-                    type = PurchaseType.PlayingGame,
-                    // store id of the game they played as well
-                    asset_id = placeId,
-                });
-
-                return 0;
-            });
-        }
     }
 
     // private async Task<T> PostToGameServer<T>(string ipAddress, string port, string methodName, List<dynamic>? args = null, CancellationToken? cancelToken = null)
@@ -485,11 +322,7 @@ public class GameServerService : ServiceBase
 
     public static long GetUserPlaceId(long userId) // get user game is in
     {
-        bool isInGame = CurrentPlayersInGame.ContainsKey(userId);
-        if (!isInGame)
-            return 0;
-
-        return CurrentPlayersInGame[userId];
+        return CurrentPlayersInGame.TryGetValue(userId, out var placeId) ? placeId : 0;
     }
 
     public static long GetPlaceIdByJobId(string jobId)
@@ -536,22 +369,6 @@ public class GameServerService : ServiceBase
             id = serverId,
         });
     }
-    public async Task SetServerPing(Guid serverId)
-    {
-        await db.ExecuteAsync("UPDATE asset_server SET updated_at = :u, status = :stat WHERE id = :id::uuid", new
-        {
-            u = DateTime.UtcNow,
-            stat = ServerStatus.Ready,
-            id = serverId,
-        });
-    }
-
-    public async Task DeleteGameServer(Guid serverId)
-    {
-        await db.ExecuteAsync("DELETE FROM asset_server_player WHERE server_id = :id::uuid", new {id = serverId});
-        await db.ExecuteAsync("DELETE FROM asset_server WHERE id = :id::uuid", new {id = serverId});
-    }
-
     private static readonly IEnumerable<int> GameServerPorts = new []
     {
         // this must always stay in sync with nginx config file

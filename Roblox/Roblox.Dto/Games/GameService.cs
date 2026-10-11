@@ -25,7 +25,8 @@ public class GameServerMultiRunEntry
 public enum ServerStatus
 {
     Loading = 1,
-    Ready
+    Ready,
+    Closing
 }
 public class GameServerDb
 {

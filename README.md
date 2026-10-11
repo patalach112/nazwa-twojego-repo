@@ -70,28 +70,69 @@ repo root/
 The web stack and the game stack are not the same thing. Generating configs or
 getting a green build does **not** make this source a working revival.
 
-1. **The website has no `/gs/*` controllers.** RCC Lua calls
-   `/gs/players/report`, `/gs/ping` and `/gs/shutdown`; the legacy `game-server`
-   calls `/gs/activity` and `/gs/delete`. Those five paths appear only in the
-   middleware whitelists. No handler records the player events, updates the
-   heartbeat or returns activity, so jobs cannot become healthy just by fixing
-   their configuration.
-2. **There is no Linux RCC binary.** `RCCService/RCCService.exe` is Windows-only.
+1. **There is no Linux RCC binary.** `RCCService/RCCService.exe` is Windows-only.
    `game-server/docker/rccservice.dockerfile` copies a `rcc-docker/` directory
    that is not in the repo. On Debian, Docker alone cannot supply that missing
    runtime; a compatible, legally obtained Linux RCC build or a Windows host
    is still needed. Wine has not been validated here.
-3. **The arbiter needs a real game launcher.** This repo now includes
+2. **The arbiter needs a real game launcher.** This repo now includes
    `game-arbiter/`, replacing the omission described in `Notes.md`. It manages
    processes and the website's start/kill/eviction contract, but the example
    `rccCommand` only starts RCC's SOAP listener. Configure a launcher that opens
    the RCC job with the right Lua script and handles the requested network and
    proxy ports. A successful spawn is not a ready game. See
    [`game-arbiter/README.md`](game-arbiter/README.md).
-4. **The source includes original private keys.** Treat the PEM files in
+3. **The source includes original private keys.** Treat the PEM files in
    `Roblox/Roblox.Website/Keys/` as compromised. They have not been changed by
    these setup fixes; do not reuse them for a public deployment. Configs,
    renderer wiring and client signing need a separate review before hosting.
+
+# GAME SERVER REPORTING
+
+The website now handles the callbacks used by the supplied Lua and legacy
+`game-server`. Every route is a JSON POST and independently checks the body
+`authorization` against `GameServerAuthorization`; Roblox headers, cookies and
+arbiter credentials cannot authorize it. `serverId` is a nonempty UUID. Numeric
+IDs may be numbers or the decimal strings emitted by Lua.
+
+| Route | Other fields | Effect |
+| --- | --- | --- |
+| `/gs/players/report` | `placeId`, `userId`, `eventType` (`Join` or `Leave`) | Update one active membership, job-linked play history, visits and rewards |
+| `/gs/ping` | `placeId`, optional nonnegative `ping` / `fps` | Mark this job ready and refresh its heartbeat; fractional statistics are rounded |
+| `/gs/activity` | none | Return `isAlive` and `updatedAt` (null for an unknown job) |
+| `/gs/shutdown` | `placeId` | Remove this job and close its remaining sessions |
+| `/gs/delete` | none | The same cleanup, used by the legacy process manager |
+
+A ready heartbeat expires after five minutes. Reports cannot modify a different
+place. Concurrent duplicate joins/leaves do not create duplicate visits or
+payments; a late Leave or deletion from a former job does not clear a newer
+session in the same place. Shutdown/delete are idempotent **notifications**, not
+a recursive call into the process that is reporting its own shutdown.
+
+Run all database migrations before enabling reports. The new reporting migration
+refuses duplicate jobs, multiple active memberships for one user and orphan
+memberships instead of silently throwing data away. Reconcile any reported
+legacy conflicts before rerunning it.
+
+## Reporting regression tests
+
+Use an empty database whose name ends in `_tests` and a **separate Redis
+instance**, not the development Redis. These commands never read or overwrite
+`api/config.json`:
+
+```bash
+export TEST_DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/pekora_reporting_tests'
+export GAME_SERVER_TEST_POSTGRES='Host=127.0.0.1;Port=5432;Database=pekora_reporting_tests;Username=postgres;Password=postgres'
+export GAME_SERVER_TEST_REDIS='127.0.0.1:6380'
+(cd api && npm install && npm run test:migrations)
+dotnet test Roblox/Roblox.GameServer.Test/Roblox.GameServer.Test.csproj --configuration Release
+```
+
+The **Game server reports** CI job provisions disposable Postgres/Redis services,
+checks the complete migration chain and rollback, then runs HTTP/lifecycle tests
+with real database and cache operations. The focused ASP.NET TestHost includes
+the CSRF, application guard and frontend proxy bypasses. This is **not** a full
+website startup test, an RCC test or proof that a real client can join.
 
 # HOW TO SETUP
 
@@ -237,7 +278,7 @@ legacy game-server expecting it to supply the missing Linux RCC runtime.
 
 ## quick start on Windows
 
-`start.bat` starts the legacy components in separate windows; it does not start the new arbiter. Generate or copy the configs first, then run `npm start` from `game-arbiter/` separately. The Windows RCC binaries do not fix the missing `/gs/*` handlers or the unfinished game launcher. See **WHAT IS STILL MISSING** above.
+`start.bat` starts the legacy components in separate windows; it does not start the new arbiter. Generate or copy the configs first, then run `npm start` from `game-arbiter/` separately. The Windows RCC binaries do not supply the unfinished game launcher. See **WHAT IS STILL MISSING** above.
 
 ## common gotchas
 
