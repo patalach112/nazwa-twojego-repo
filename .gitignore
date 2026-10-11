@@ -79,3 +79,6 @@ game-renderer/eslint.config.js.old
 
 # runtime data created by scripts/setup.sh (assets, thumbnails, ...)
 /data
+
+# bytecode from the setup tests
+__pycache__/
