@@ -36,7 +36,7 @@ jobs:
         env:
           REAL_WEBSITE_TEST: '1'
         run: node frontend/test/real-website.cjs
-      - name: Import one PNG through the real admin API and verify the local store
+      - name: Import one PNG through the real admin API, load the staff panel and verify the local store
         env:
           ASSET_IMPORT_TEST: '1'
           PYTHONUNBUFFERED: '1'

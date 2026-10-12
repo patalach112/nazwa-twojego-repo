@@ -201,14 +201,21 @@ they are stored, images are capped at 8 MB, the endpoint body is capped at
 30 MB, and a file name that contains a path is refused instead of being
 normalised. A rejected upload creates no asset row and no file.
 
+The staff panel that calls this endpoint (`/admin/`, built from `admin/` into the
+website image) lets an owner in `OwnerUserId` create items and clothing in the
+browser. Anonymous visitors and ordinary accounts are redirected away from it and
+keep getting 401/403 from the `/admin-api/api/` endpoints.
+
 `scripts/test_asset_import.py` proves that path end to end against the
 disposable Docker stack (`*_tests` database): it verifies anonymous and ordinary
 accounts are refused, the `asset`/`asset_version` rows and the stored file, the
 exact delivered PNG bytes, a `website` restart, all rejection cases without
-secret leakage, and that a disabled renderer leaves the thumbnail pending. See
-[docker/local-stack/README.md](docker/local-stack/README.md) for the two
-commands and the limits of the check. Rendering, avatar thumbnails, the admin
-panel UI, asset queues and game joins remain unverified.
+secret leakage, that a disabled renderer leaves the thumbnail pending, and that
+the panel page, its redirected bundle and the permissions endpoint are served to
+the owner only. See [docker/local-stack/README.md](docker/local-stack/README.md)
+for the two commands and the limits of the check. Rendering, avatar thumbnails,
+the panel screens that need a renderer, asset queues and game joins remain
+unverified.
 
 When `Render:BaseUrl` is empty, `AssetsService` skips rendering entirely instead
 of starting a request that would fail in the background; thumbnails stay
@@ -389,7 +396,9 @@ For a coordinated Debian setup with actual accounts rather than visual fixtures:
 This builds/runs the website, frontend, migrations, PostgreSQL and Redis with
 separate persistent private configs. Both `http://localhost:3000/` and
 `http://localhost:5000/` serve the real website once healthy. Local signup/login
-use the existing Razor forms. See `docker/local-stack/README.md` for requirements,
+use the existing Razor forms. The same image also builds the staff panel, so
+`http://localhost:5000/admin/` renders for an account listed in `OwnerUserId`.
+See `docker/local-stack/README.md` for requirements,
 health checks, configuration preservation, backups and isolated browser tests.
 RCC/client joins and rendering are not supplied by this website-only stack.
 
@@ -419,7 +428,7 @@ rendering leaves pending thumbnails, not proof of a working avatar renderer.
 - **Directories need trailing slashes** - the code concatenates paths like `JsonDataDirectory + "avatar-colors.json"`. Missing slash = crash or missing files.
 - **Run the website from its own folder** (`Roblox/Roblox.Website`). `appsettings.json` and `game-servers.json` are read from the working directory, so `dotnet run --project ...` from somewhere else will not find them. The published build works too, both json files are copied next to the binary now.
 - **Everything is case sensitive on linux.** The css folder in the repo is `api/public/css/Roblox`, and the code used to ask for `css/roblox` - that only ever worked because windows does not care.
-- **Build the admin at least once** (`cd admin && npm i && npm run build`). `/admin/` reads `admin/public/build/bundle.js`, which does not exist until you build it.
+- **Build the admin at least once** (`cd admin && npm i && npm run build`) when running the website natively. `/admin/` reads `admin/public/build/bundle.js`, which does not exist until you build it. The local Docker stack builds that bundle inside the website image, so `/admin/` works there without any host-side Node setup.
 - **`api/` is legacy** (`api/README.MD`): it is only used for its `public/` folder and migrations. The actual API is the .NET project in `Roblox/Roblox.Website/`.
 - **`game-server/README.md` says "THIS IS OUTDATED, DO NOT USE".** Treat game-server/game-renderer as a starting point, not a finished service. Its `config.example.json` is a configuration reference, not proof that the game/render stack works.
 - **`Notes.md` describes the original omission.** `game-arbiter/` is now supplied, but requires a compatible RCC launcher. The generated command points at a Windows executable; Docker cannot replace binaries that are not in the repo.

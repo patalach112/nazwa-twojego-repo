@@ -72,6 +72,21 @@ No account is automatically made an owner. After registering, put your actual
 user ID into `OwnerUserId` in `docker/local/website.json` and restart `website`.
 Do not use a fixed guessed ID or grant every registered user staff privileges.
 
+## Staff panel
+
+The website image builds the Svelte staff panel from `admin/` and copies it to
+`/app/admin/`, which is where `Directories:AdminBundle` points. An account in
+`OwnerUserId` can therefore open **http://localhost:5000/admin/** and use the
+real forms, for example **Create Item** (`/asset/create`) and **Create Clothing**.
+Everyone else is redirected to `/home`, and an ordinary account keeps getting
+401/403 from the `/admin-api/api/` endpoints behind those screens.
+
+The panel is served by the .NET website, so use the backend port; the Next
+frontend on port 3000 proxies the API but not `/admin/` itself. Panel screens
+that need a renderer (re-render, thumbnails) remain pending until a renderer
+exists; create, version and manage screens work without one. A native
+(non-Docker) website still needs `cd admin && npm i && npm run build`.
+
 ## Real account/browser regression
 
 The `Real website accounts` workflow builds these images and runs real Chromium
@@ -107,8 +122,11 @@ the stored rows, the content-addressed file in `docker/local/data/assets/`,
 anonymous delivery through `/asset/?id=`, survival of a `website` restart, the
 refusal of a renamed text file, a path-like file name and oversized uploads, and
 that a disabled renderer leaves the thumbnail pending instead of reporting a
-finished one. It registers its own accounts, writes the new user id into
-`OwnerUserId` (the documented mechanism, not SQL) and restores
+finished one. It also loads the staff panel as the configured owner: the page,
+the redirected `bundle.js`/`bundle.css` and the permissions endpoint must come
+from the built bundle, while an anonymous visitor and an ordinary account are
+still sent away from `/admin/`. It registers its own accounts, writes the new
+user id into `OwnerUserId` (the documented mechanism, not SQL) and restores
 `docker/local/website.json` afterwards.
 
 ```bash
@@ -119,8 +137,9 @@ ASSET_IMPORT_TEST=1 python3 scripts/test_asset_import.py
 ```
 
 It refuses to run against a non-`*_tests` configuration. Rendering, avatar
-thumbnails, the admin panel UI and game joins are **not** covered by this check;
-a green run only proves the local import/delivery path above.
+thumbnails, the remaining panel screens that need a renderer and game joins are
+**not** covered by this check; a green run proves the local import/delivery path
+and that the panel is served and gated, not that rendering works.
 
 ## Still outside this stack
 

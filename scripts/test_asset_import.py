@@ -18,7 +18,9 @@ Checks:
 5. the asset is still served after a backend restart,
 6. an invalid file, a path-like file name and an oversized upload are refused
    without leaking configuration secrets,
-7. a disabled renderer leaves the thumbnail pending instead of faking a result.
+7. a disabled renderer leaves the thumbnail pending instead of faking a result,
+8. the staff panel that calls this endpoint is served from the built Svelte
+   bundle for the configured owner and stays closed to everyone else.
 """
 
 import html.parser
@@ -313,6 +315,18 @@ def expect_status(response, allowed, what):
     return headers, body
 
 
+def follow_redirects(client, url, limit=5):
+    """Follows a short redirect chain and reports where the content was served."""
+    for _ in range(limit):
+        status, headers, body = client.get(url)
+        location = headers.get("Location")
+        if status in (301, 302, 303, 307, 308) and location:
+            url = urllib.parse.urljoin(url, location)
+            continue
+        return status, headers, body, url
+    fail(f"too many redirects while following {url}")
+
+
 def assert_no_secrets(secret_values, body, what):
     text = body.decode("utf-8", "replace")
     for value in secret_values:
@@ -497,6 +511,38 @@ def main():
         if json.loads(website_path.read_text())["OwnerUserId"] != [owner_id]:
             fail("the restart test modified the owner configuration")
         notice("asset rows, file and delivery survive a backend restart")
+
+        # 8. The staff panel that calls this import surface: every page it needs is
+        #    served to the owner from the built bundle, and it stays staff-only.
+        status, headers, body = owner.get(f"{backend}/admin/")
+        assert_no_secrets(configuration_secrets, body, "the staff panel page")
+        if status != 200 or "html" not in headers.get("Content-Type", "").lower():
+            fail(f"the staff panel returned HTTP {status} for the configured owner")
+        if b"/admin/build-redirect/bundle.js" not in body:
+            fail("the staff panel page does not load its bundle")
+        status, headers, body, served_from = follow_redirects(owner, f"{backend}/admin/build-redirect/bundle.js")
+        assert_no_secrets(configuration_secrets, body, "the staff panel bundle")
+        if status != 200 or "javascript" not in headers.get("Content-Type", "").lower():
+            fail(f"the staff panel bundle returned HTTP {status}")
+        if not re.fullmatch(r"/admin/build/[^/]+/bundle\.js", urllib.parse.urlsplit(served_from).path):
+            fail(f"the staff panel bundle is served from an unexpected path: {served_from}")
+        if len(body) < 200_000 or b"/asset/create" not in body or b"Create Item" not in body:
+            fail(f"the staff panel bundle looks like a stub ({len(body)} bytes)")
+        status, headers, body, _ = follow_redirects(owner, f"{backend}/admin/build-redirect/bundle.css")
+        if status != 200 or "css" not in headers.get("Content-Type", "").lower() or len(body) < 500:
+            fail(f"the staff panel stylesheet returned HTTP {status} with {len(body)} bytes")
+        status, _, body = owner.get(f"{backend}/admin-api/api/permissions")
+        if status != 200 or json.loads(body)["rank"]["name"] != "Owner":
+            fail(f"the staff panel permissions endpoint returned HTTP {status}: "
+                 + body.decode("utf-8", "replace")[:200])
+        for client, who in ((Client(), "an anonymous visitor"), (plain, "an ordinary account")):
+            status, headers, _ = client.get(f"{backend}/admin/")
+            if status != 302 or headers.get("Location") != "/home":
+                fail(f"{who} got HTTP {status} instead of a redirect away from the staff panel")
+        headers, body = expect_status(plain.get(f"{backend}/admin-api/api/applications/pending-num"),
+                                      (401, 403), "an ordinary account staff API call")
+        assert_no_secrets(configuration_secrets, body, "an ordinary account staff API call")
+        notice("staff panel pages, bundle and permissions work for the owner and stay closed to others")
     except SystemExit:
         raise
     except Exception as error:  # noqa: BLE001 - the reason must reach the annotation
@@ -508,8 +554,8 @@ def main():
         # Hand the disposable configuration back exactly as it was generated.
         write_config_bytes(website_path, original_website)
 
-    print("Asset import through the real admin API, local storage and restart behaviour passed.")
-    print("Rendering (RCC), the admin panel, avatar thumbnails and game joins remain separate work.")
+    print("Asset import through the real admin API, the staff panel, local storage and restart behaviour passed.")
+    print("Rendering (RCC), avatar thumbnails, game joins and the remaining panel screens stay separate work.")
 
 
 if __name__ == "__main__":
