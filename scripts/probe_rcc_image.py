@@ -6,12 +6,16 @@ The build's own ``Image.lua`` renders a texture asset by asking
 it one, by clicking the asset URL directly; if either step fails it returns the
 transparent placeholder it carries, and the stack resizes that placeholder into a blank
 thumbnail. That makes the reason invisible from the website side, so this probe runs one
-Lua job inside the renderer container (the only place that has RCC, over loopback) and
-prints RCC's answer for each call the script makes.
+job inside the renderer container (the only place that has RCC, over loopback) and
+returns RCC's answer for each call the script can make.
 
-It is a diagnostic: nothing is uploaded, no thumbnail row and no file is written, and the
-result is never treated as a render. It reports RCC's own messages, which is what a fix
-has to be based on.
+RCC 2020 takes its job as JSON: the script text is
+``{"Mode": "ExecuteScript", "Settings": {"Type": <script>, "Arguments": [...]}}`` and the
+script is loaded from ``internalscripts/scripts/<Type>.lua``. This is the mechanism the
+step-1 JSON probe verified, so the probe writes its diagnostic script under that directory
+with a unique name, never over a script the build ships, and deletes it again in a
+``finally`` block. It uploads nothing, stores no thumbnail row and touches no file of the
+website; the integration test calls it only after an assertion already failed.
 """
 
 import json
@@ -21,29 +25,45 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "renderer"
-TIMEOUT = 240
+TIMEOUT = 300
+RUNTIME = "/home/rcc/runtime"
 
-# Tokens are substituted literally: the Lua contains % patterns of its own (gsub).
-LUA = """local baseUrl, assetUrl, assetId = "__BASE_URL__", "__ASSET_URL__", __ASSET_ID__
+LUA = """local baseUrl, assetUrl, assetId, staticUrl = ...
+
 local ContentProvider = game:GetService('ContentProvider')
 local ThumbnailGenerator = game:GetService('ThumbnailGenerator')
 local out = {}
-local function report(name, ok, value)
-    local shown = tostring(value):gsub('%s+', ' '):sub(1, 220)
-    table.insert(out, name .. '=' .. tostring(ok) .. ' / ' .. shown)
+local function report(name, result, value)
+    local shown = tostring(value):gsub('%s+', ' '):sub(1, 200)
+    table.insert(out, name .. '=' .. tostring(result) .. ' / ' .. shown)
 end
+
 report('SetBaseUrl', pcall(function() return ContentProvider:SetBaseUrl(baseUrl) end))
+-- A static PNG the website always serves, to tell "ClickTexture is broken" apart from
+-- "the asset URL is the problem".
+report('ClickTextureStaticPng', pcall(function()
+    return #ThumbnailGenerator:ClickTexture(staticUrl, 'PNG', 420, 420)
+end))
 report('GetObjects', pcall(function() return #game:GetObjects(assetUrl) end))
-report('ClickTextureUrl', pcall(function() return #ThumbnailGenerator:ClickTexture(assetUrl, 'PNG', 420, 420) end))
+report('ClickTextureUrl', pcall(function()
+    return #ThumbnailGenerator:ClickTexture(assetUrl, 'PNG', 420, 420)
+end))
 report('PreloadUrl', pcall(function() return ContentProvider:PreloadAsync({assetUrl}) end))
-report('ClickTextureUrlAfterPreload', pcall(function() return #ThumbnailGenerator:ClickTexture(assetUrl, 'PNG', 420, 420) end))
-report('ClickTextureAssetId', pcall(function() return #ThumbnailGenerator:ClickTexture('rbxassetid://' .. tostring(assetId), 'PNG', 420, 420) end))
+report('ClickTextureUrlAfterPreload', pcall(function()
+    return #ThumbnailGenerator:ClickTexture(assetUrl, 'PNG', 420, 420)
+end))
+report('ClickTextureAssetId', pcall(function()
+    return #ThumbnailGenerator:ClickTexture('rbxassetid://' .. tostring(assetId), 'PNG', 420, 420)
+end))
+
 return table.concat(out, ' | ')
 """
 
-# Runs inside the container: reuse the renderer's own SOAP client rather than a second
-# implementation of the protocol, and close the job in a finally block.
+# Runs inside the container: reuse the renderer's own SOAP client instead of a second
+# implementation of the protocol, and always close the job and remove the script.
 PROGRAM = '''
+import json
+import os
 import sys
 import uuid
 import xml.etree.ElementTree as ET
@@ -52,18 +72,35 @@ sys.path.insert(0, '/app')
 import renderer
 
 lua = __LUA__
+arguments = __ARGUMENTS__
+timeout = __TIMEOUT__
+
+directory = os.path.join('__RUNTIME__', 'internalscripts', 'scripts')
+os.makedirs(directory, exist_ok=True)
+script_type = 'ImageProbe' + uuid.uuid4().hex[:8]
+path = os.path.join(directory, script_type + '.lua')
+with open(path, 'x') as stream:
+    stream.write(lua)
+
 client = renderer.RccClient()
 job_id = str(uuid.uuid4())
 job = ET.Element('job')
-for key, value in {'id': job_id, 'category': 0, 'cores': 1, 'expirationInSeconds': __TIMEOUT__}.items():
+for key, value in {{'id': job_id, 'category': 0, 'cores': 1, 'expirationInSeconds': timeout}}.items():
     ET.SubElement(job, key).text = str(value)
 script = ET.Element('script')
-ET.SubElement(script, 'name').text = 'ImageProbe'
-ET.SubElement(script, 'script').text = lua
+ET.SubElement(script, 'name').text = script_type
+ET.SubElement(script, 'script').text = json.dumps({{
+    'Mode': 'ExecuteScript',
+    'Settings': {{'Type': script_type, 'Arguments': arguments}},
+    'Arguments': {{}},
+}})
+
 opened = False
 try:
-    reply = client.call('OpenJobEx', [job, script], timeout=__TIMEOUT__)
+    reply = client.call('OpenJobEx', [job, script], timeout=timeout)
     opened = True
+    texts = [element.text.strip() for element in reply.iter() if element.text and element.text.strip()]
+    print(max(texts, key=len) if texts else 'RCC returned no text for the probe job')
 finally:
     if opened:
         identifier = ET.Element('jobID')
@@ -72,8 +109,10 @@ finally:
             client.call('CloseJob', [identifier], timeout=30)
         except renderer.RenderError as error:
             print('CloseJob failed: ' + str(error), file=sys.stderr)
-texts = [element.text.strip() for element in reply.iter() if element.text and element.text.strip()]
-print(max(texts, key=len) if texts else 'RCC returned no text for the probe job')
+    try:
+        os.unlink(path)
+    except OSError as error:
+        print('the probe script could not be removed: ' + str(error), file=sys.stderr)
 '''
 
 
@@ -83,12 +122,12 @@ def run_probe(image_id, base_url="http://website:5000", run=None):
     ``run`` runs a command in the stack and returns ``(returncode, output)``; it exists so
     the probe's shape can be tested without Docker.
     """
-    asset_url = f"{base_url.rstrip('/')}/asset/?id={int(image_id)}"
-    lua = (LUA.replace('__BASE_URL__', base_url.rstrip('/'))
-              .replace('__ASSET_URL__', asset_url)
-              .replace('__ASSET_ID__', str(int(image_id))))
-    program = (PROGRAM.replace('__LUA__', json.dumps(lua))
-                      .replace('__TIMEOUT__', str(TIMEOUT - 30)))
+    base = base_url.rstrip('/')
+    arguments = [base, f"{base}/asset/?id={int(image_id)}", int(image_id), f"{base}/img/Audio.png"]
+    program = (PROGRAM.replace('__LUA__', json.dumps(LUA))
+                      .replace('__ARGUMENTS__', json.dumps(arguments))
+                      .replace('__TIMEOUT__', str(TIMEOUT - 60))
+                      .replace('__RUNTIME__', RUNTIME))
     run = run or run_in_container
     code, output = run(program)
     if code != 0:

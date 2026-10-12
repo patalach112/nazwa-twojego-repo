@@ -811,7 +811,7 @@ class RendererRestartToleranceTest(unittest.TestCase):
 class ProbeTest(unittest.TestCase):
     """The RCC image probe reports what the shipped script's calls do."""
 
-    def test_the_container_program_runs_every_call_the_script_makes(self):
+    def program(self):
         sent = {}
 
         def run(program):
@@ -819,15 +819,31 @@ class ProbeTest(unittest.TestCase):
             return 0, 'GetObjects=(true) / 3'
 
         output = probe_rcc_image.run_probe(9, run=run)
+        return sent['program'], output
+
+    def test_the_container_program_runs_every_call_the_script_makes(self):
+        program, output = self.program()
         self.assertIn('GetObjects', output)
-        program = sent['program']
-        self.assertIn("sys.path.insert(0, '/app')", program)
+        self.assertIn("sys.path.insert(0, '/app')", program, 'the probe reuses the renderer client')
         start = program.index('lua = ') + len('lua = ')
         lua = json.loads(program[start:program.index('\n', start)])
         for call in ('SetBaseUrl', 'GetObjects', 'ClickTexture(assetUrl', 'PreloadAsync',
-                     "'rbxassetid://'"):
+                     "'rbxassetid://'", 'ClickTextureStaticPng'):
             self.assertIn(call, lua, call)
-        self.assertIn('/asset/?id=9', lua)
+
+    def test_the_job_is_the_json_spec_this_build_accepts(self):
+        # RCC 2020 rejects a raw Lua chunk with "Attempted to execute with invalid JSON":
+        # the script text has to be the JSON job spec, and the Lua has to live in
+        # internalscripts/scripts under a name the build does not ship.
+        program, _ = self.program()
+        self.assertIn("'Mode': 'ExecuteScript'", program)
+        self.assertIn("internalscripts', 'scripts'", program)
+        self.assertIn("uuid.uuid4().hex[:8]", program, 'the probe script name must be unique')
+        self.assertIn('os.unlink(path)', program, 'the probe script must be removed again')
+        self.assertIn('CloseJob', program)
+        self.assertIn('/asset/?id=9', program, 'the asset URL is passed as a job argument')
+        self.assertNotIn('internalscripts/thumbnails', program,
+                         'the probe must never write next to the shipped thumbnail scripts')
 
     def test_a_probe_that_cannot_run_is_reported_not_raised(self):
         self.assertIn('could not run', probe_rcc_image.run_probe(9, run=lambda program: (1, 'no such service')))

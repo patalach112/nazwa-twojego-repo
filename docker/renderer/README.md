@@ -125,8 +125,11 @@ pending instead of being faked:
   extracts those literals from the build's own scripts (`RCC_SCRIPTS_DIRECTORY`) and
   answers 502 naming the script, so the thumbnail stays pending instead of white.
 * `scripts/probe_rcc_image.py` asks RCC itself what the shipped script's calls do
-  (`GetObjects`, `ClickTexture` on the asset URL, the same after `PreloadAsync`, and
-  `ClickTexture` on `rbxassetid://`). It renders nothing and writes nothing; the
+  (`GetObjects`, `ClickTexture` on the asset URL, on a static website PNG, the same after
+  `PreloadAsync`, and `ClickTexture` on `rbxassetid://`). It writes a unique diagnostic
+  script under `internalscripts/scripts/` - never next to the shipped thumbnail scripts -
+  sends it as the JSON `ExecuteScript` job this build accepts (a raw Lua chunk is refused
+  with "Attempted to execute with invalid JSON"), removes it again and stores nothing. The
   integration test calls it when a texture assertion fails, so the reason comes from RCC
   rather than from a guess.
 * The response is checked before it is returned: it must be decodable base64, a PNG,
