@@ -9,6 +9,13 @@
 # process-group signal forwarding.
 set -eu
 
+# RCC must not fetch a thumbnail asset from anywhere but this stack. RCC only trusts the
+# host names compiled into RCCService.exe, so the renderer is configured with the website's
+# trusted alias; if that name resolves to the real internet host (the alias is missing, or
+# the stack runs somewhere DNS answers differently), refuse to start instead of rendering
+# an asset from a foreign server.
+python3 /app/renderer.py --verify-asset-host
+
 /usr/local/bin/entrypoint.sh &
 rcc_launcher=$!
 

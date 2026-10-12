@@ -25,7 +25,9 @@ import os
 from pathlib import Path
 import re
 import signal
+import socket
 import struct
+import sys
 import threading
 import time
 import urllib.error
@@ -61,6 +63,13 @@ HEALTH_STALE_SECONDS = float(os.environ.get('RENDERER_HEALTH_STALE', '120'))
 # is reachable from every service in the compose network, so it must not become
 # a proxy for arbitrary URLs.
 APPEARANCE_PATH = '/v1.1/avatar-fetch'
+# RCC 2020 answers every asset fetch it was not compiled to trust with "Trust check
+# failed": the accepted hosts (www.silrev.biz, assetgame.silrev.biz,
+# assetdelivery.silrev.biz) are baked into RCCService.exe. A local stack therefore
+# reaches its own website through one of those names - a compose network alias - and
+# this variable is that name. It is used for the URLs RCC fetches (thumbnail script
+# arguments), never for the renderer's own calls, which keep using the service URL.
+ASSET_BASE_URL_ENV = 'RENDERER_ASSET_BASE_URL'
 
 
 class RenderError(Exception):
@@ -286,6 +295,10 @@ class Renderer:
         self.rcc = rcc or RccClient()
         self.website = website or WebsiteClient()
         self.base_url = self.website.base_url
+        # What RCC is told to fetch from, which must be a host name this build trusts.
+        # Unset means the website service itself, which is what a remote deployment
+        # with a real trusted domain does not need to override.
+        self.asset_base_url = (os.environ.get(ASSET_BASE_URL_ENV) or self.base_url).rstrip('/')
         self.lock = threading.Lock()
         self.max_retries = max(0, int(os.environ.get('RENDERER_MAX_RETRIES', '1')))
         self.warmup = {'state': 'pending', 'steps': {}}
@@ -309,23 +322,23 @@ class Renderer:
 
     def arguments_image(self, payload):
         """Image.lua: imageId, baseUrl, fileExtension, x, y."""
-        return 'Image', [self.asset_id(payload), self.base_url, 'PNG', 420, 420]
+        return 'Image', [self.asset_id(payload), self.asset_base_url, 'PNG', 420, 420]
 
     def arguments_model(self, payload):
         """Model.lua: assetUrl, fileExtension, x, y, baseUrl."""
-        return 'Model', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.base_url]
+        return 'Model', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.asset_base_url]
 
     def arguments_hat(self, payload):
         """Hat.lua: assetUrl, fileExtension, x, y, baseUrl."""
-        return 'Hat', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.base_url]
+        return 'Hat', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.asset_base_url]
 
     def arguments_mesh(self, payload):
         """Mesh.lua: assetUrl, fileExtension, x, y, baseUrl."""
-        return 'Mesh', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.base_url]
+        return 'Mesh', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.asset_base_url]
 
     def appearance_url(self, user_id):
         """The appearance document RCC's avatar scripts fetch themselves."""
-        return f'{self.base_url}{APPEARANCE_PATH}?userId={int(user_id)}'
+        return f'{self.asset_base_url}{APPEARANCE_PATH}?userId={int(user_id)}'
 
     def avatar_script(self, user_id):
         """Avatar.lua for R6, Avatar_R15_Action.lua for R15 accounts.
@@ -348,7 +361,7 @@ class Renderer:
         """Avatar.lua / Avatar_R15_Action.lua, each in its own declared order."""
         user_id = self.user_id(payload)
         script = self.avatar_script(user_id)
-        values = {'baseUrl': self.base_url, 'characterAppearanceUrl': self.appearance_url(user_id),
+        values = {'baseUrl': self.asset_base_url, 'characterAppearanceUrl': self.appearance_url(user_id),
                   'fileExtension': 'PNG', 'x': 420, 'y': 420}
         return script, [values[name] for name in self.avatar_argument_order[script]]
 
@@ -359,7 +372,7 @@ class Renderer:
         The zoom values are the ones this repository's own Closeup template uses.
         """
         user_id = self.user_id(payload)
-        return 'Closeup', [self.base_url, self.appearance_url(user_id), 'PNG', 420, 420,
+        return 'Closeup', [self.asset_base_url, self.appearance_url(user_id), 'PNG', 420, 420,
                            True, 40, 60, 0, 0]
 
     routes = {
@@ -388,7 +401,7 @@ class Renderer:
     }
 
     def asset_url(self, asset_id):
-        return f'{self.base_url}/asset/?id={asset_id}'
+        return f'{self.asset_base_url}/asset/?id={asset_id}'
 
     @staticmethod
     def asset_id(payload):
@@ -422,7 +435,7 @@ class Renderer:
         try:
             with self.lock:
                 image = self.rcc.render(WARMUP_SCRIPT,
-                                        [R6_RIG, 'PNG', 420, 420, self.base_url], 420)
+                                        [R6_RIG, 'PNG', 420, 420, self.asset_base_url], 420)
             self.warmup = {'state': 'ok', 'script': WARMUP_SCRIPT, 'bytes': len(image),
                            'seconds': round(time.monotonic() - started, 2)}
         except RenderError as error:
@@ -596,7 +609,54 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {'success': True, 'message': 'ok', 'data': base64.b64encode(image).decode()})
 
 
+def verify_asset_host(asset_url=None, website_url=None, resolver=None):
+    """Refuses a stack in which RCC's asset host does not resolve to the website.
+
+    RCC fetches thumbnail assets itself, and it only trusts the host names compiled
+    into RCCService.exe, so the local stack publishes the website under one of those
+    names (a compose network alias). If that alias is missing, the name resolves to the
+    real internet host and RCC would render an asset from a foreign server. Comparing
+    the resolved addresses turns that case into a refused start.
+
+    Returns ``(ok, message)``; ``supervise.sh`` runs this before RCC is started.
+    """
+    asset_url = asset_url or os.environ.get(ASSET_BASE_URL_ENV)
+    website_url = website_url or os.environ.get('WEBSITE_BASE_URL', DEFAULT_WEBSITE_URL)
+    if not asset_url:
+        return True, 'no RCC asset host is configured; RCC fetches from the website service'
+    asset_host = urllib.parse.urlsplit(asset_url).hostname
+    website_host = urllib.parse.urlsplit(website_url).hostname
+    if not asset_host or not website_host:
+        return False, f'{asset_url} or {website_url} carries no host name'
+    if asset_host == website_host:
+        return True, f'RCC fetches assets from {asset_host}, the website service itself'
+    resolver = resolver or socket.getaddrinfo
+
+    def addresses(host):
+        try:
+            infos = resolver(host, None, type=socket.SOCK_STREAM)
+        except OSError as error:
+            raise RenderError(f'{host} does not resolve here: {error}') from None
+        return {info[4][0] for info in infos}
+
+    try:
+        asset_addresses = addresses(asset_host)
+        website_addresses = addresses(website_host)
+    except RenderError as error:
+        return False, str(error) + '; RCC must fetch assets from this stack, not from elsewhere'
+    stray = asset_addresses - website_addresses
+    if not asset_addresses or stray:
+        return False, (f'{asset_host} resolves to {sorted(asset_addresses)}, which is not '
+                       f'{website_host} ({sorted(website_addresses)}); RCC must fetch assets '
+                       'from this stack, not from elsewhere')
+    return True, f'{asset_host} resolves to the local website ({sorted(asset_addresses)})'
+
+
 def main():
+    if '--verify-asset-host' in sys.argv[1:]:
+        ok, message = verify_asset_host()
+        print(('asset host accepted: ' if ok else 'asset host refused: ') + message, flush=True)
+        raise SystemExit(0 if ok else 1)
     port = int(os.environ.get('RENDERER_PORT', str(DEFAULT_PORT)))
     service = Renderer()
     Handler.renderer = service
@@ -607,7 +667,7 @@ def main():
     server = ThreadingHTTPServer(('0.0.0.0', port), Handler)
     server.daemon_threads = True
     log('listening', port=port, rcc=service.rcc.url, website=service.base_url,
-        authorization=bool(Handler.authorization))
+        asset_base=service.asset_base_url, authorization=bool(Handler.authorization))
     # Contact RCC once before any job starts: the warm-up job keeps RCC busy, and a
     # renderer that has never spoken to RCC cannot report health during it.
     try:

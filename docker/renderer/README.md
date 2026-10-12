@@ -70,8 +70,30 @@ server uses; RCC's own scripts then load the character. That path is *attempted*
 claimed: the integration test reports what a real call returned.
 
 Asset URLs are built from configured values only
-(`<WEBSITE_BASE_URL>/asset/?id=<assetId>`), never from the request body, so the renderer
-cannot be made to fetch an arbitrary URL.
+(`<RENDERER_ASSET_BASE_URL>/asset/?id=<assetId>`), never from the request body, so the
+renderer cannot be made to fetch an arbitrary URL.
+
+RCC fetches those URLs itself, and **this build only trusts the host names compiled into
+`RCCService.exe`** (`www.silrev.biz`, `assetgame.silrev.biz`, `assetdelivery.silrev.biz`);
+anything else is answered with `Trust check failed`, which is why the first renders came
+back as the script's own blank placeholder. The renderer therefore hands RCC a trusted
+name and `docker-compose.local.yml` gives the website that name as a **compose network
+alias**:
+
+```yaml
+    networks:
+      default:
+        aliases: [www.silrev.biz, assetgame.silrev.biz, assetdelivery.silrev.biz]
+```
+
+The alias exists only inside this stack, is never published, and does not change what the
+website serves. Before RCC is started, `supervise.sh` runs
+`python3 /app/renderer.py --verify-asset-host`, which resolves the trusted name and the
+`website` service and **refuses to start** unless they are the same address: without the
+alias the name would resolve to the real internet host and RCC would render a foreign
+asset. `RENDERER_ASSET_BASE_URL` is only used for the URLs RCC fetches; the renderer's own
+calls (the appearance document it reads to pick the avatar script) keep using
+`WEBSITE_BASE_URL`.
 
 These endpoints answer `501` with the concrete missing piece, so the thumbnail stays
 pending instead of being faked:
@@ -93,7 +115,8 @@ pending instead of being faked:
 | `RENDERER_PORT` | `3521` | listen port inside the container |
 | `RCC_SOAP_URL` | `http://127.0.0.1:64989/` | RCC SOAP endpoint, in this container |
 | `RCC_SOAP_NAMESPACE` | `http://silrev.biz/` | SOAP namespace of this build |
-| `WEBSITE_BASE_URL` | `http://website:5000` | where asset and appearance documents come from |
+| `WEBSITE_BASE_URL` | `http://website:5000` | where the renderer's own calls (appearance documents) go |
+| `RENDERER_ASSET_BASE_URL` | `WEBSITE_BASE_URL` | the trusted host name RCC is told to fetch assets from; a compose network alias of the website |
 | `RENDERER_AUTHORIZATION` | unset | the accepted `Authorization` value; set from `docker/local/compose.env` by `--enable-renderer` and used in preference to the mounted config |
 | `RENDERER_WEBSITE_CONFIG` | `/config/website.json` | mounted website config to read `Render:Authorization` from |
 | `RENDERER_JOB_TIMEOUT` | `120` | seconds a single RCC job may run |
@@ -124,9 +147,11 @@ pending instead of being faked:
   and the website then resizes it into a blank thumbnail that looks finished. The renderer
   extracts those literals from the build's own scripts (`RCC_SCRIPTS_DIRECTORY`) and
   answers 502 naming the script, so the thumbnail stays pending instead of white.
-* `scripts/probe_rcc_image.py` asks RCC itself what the shipped script's calls do
-  (`GetObjects`, `ClickTexture` on the asset URL, on a static website PNG, the same after
-  `PreloadAsync`, and `ClickTexture` on `rbxassetid://`). It writes a unique diagnostic
+* `scripts/probe_rcc_image.py` asks RCC itself what the shipped script's calls do: one
+  job clicks the same asset through the compose service name, through the trusted name
+  over http and https and through `rbxassetid://`, plus the website's static
+  `/img/Audio.png` through both names, and reports byte counts (`Image.lua`'s own
+  placeholder is named as such). It writes a unique diagnostic
   script under `internalscripts/scripts/` - never next to the shipped thumbnail scripts -
   sends it as the JSON `ExecuteScript` job this build accepts (a raw Lua chunk is refused
   with "Attempted to execute with invalid JSON"), removes it again and stores nothing. The

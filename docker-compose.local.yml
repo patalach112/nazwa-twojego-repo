@@ -66,6 +66,17 @@ services:
       start_period: 20s
     stop_grace_period: 15s
 
+    # RCC fetches thumbnail assets itself and only trusts the host names baked into
+    # RCCService.exe. These aliases are compose network aliases only: they exist inside
+    # this stack, they are never published, and the renderer refuses to start if they do
+    # not resolve to this container.
+    networks:
+      default:
+        aliases:
+          - www.silrev.biz
+          - assetgame.silrev.biz
+          - assetdelivery.silrev.biz
+
   frontend:
     build:
       context: .
@@ -107,7 +118,12 @@ services:
     # `restart website` restart the renderer and cut the renders it is doing. RCC runs
     # in this same container, and supervise.sh waits for it before serving anything.
     environment:
-      RCC_BASE_URL: http://website:5000
+      # RCCService.exe trusts only the host names compiled into it, so RCC is given the
+      # website's trusted alias (see the website service below) rather than the compose
+      # service name. supervise.sh refuses to start RCC when that name resolves
+      # somewhere else, so no render can quietly use a foreign asset.
+      RCC_BASE_URL: http://www.silrev.biz
+      RENDERER_ASSET_BASE_URL: http://www.silrev.biz
       RCC_SOAP_NAMESPACE: ${RCC_SOAP_NAMESPACE:-http://silrev.biz/}
       # The renderer asks RCC for these scripts by name, so the build must have them.
       RCC_VERIFY_THUMBNAIL_SCRIPTS: "1"

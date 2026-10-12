@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 import urllib.error
 import urllib.request
@@ -719,6 +720,22 @@ class ContainerLayoutTest(unittest.TestCase):
         environment = renderer_service['environment']
         self.assertEqual(environment['RCC_VERIFY_THUMBNAIL_SCRIPTS'], '1')
         self.assertEqual(environment['WEBSITE_BASE_URL'], 'http://website:5000')
+        # RCC is given the host name this build trusts, and only this stack answers to it.
+        self.assertEqual(environment['RENDERER_ASSET_BASE_URL'], 'http://www.silrev.biz')
+        self.assertEqual(environment['RCC_BASE_URL'], 'http://www.silrev.biz')
+
+    def test_the_trusted_host_name_is_a_local_alias_of_the_website(self):
+        aliases = self.compose()['website']['networks']['default']['aliases']
+        self.assertIn('www.silrev.biz', aliases)
+        # RCC builds asset URLs itself from the base URL it is given, so the name it
+        # trusts has to be an alias of the local website rather than a public host.
+        self.assertNotIn('silrev.biz', aliases, 'the bare domain is not what RCC is told to use')
+
+    def test_the_renderer_refuses_to_start_when_the_trusted_name_is_not_local(self):
+        sh = (ROOT / 'docker/renderer/supervise.sh').read_text()
+        guard = sh.index('--verify-asset-host')
+        self.assertLess(guard, sh.index('entrypoint.sh &'),
+                        'the check must run before RCC is started')
 
     def test_the_renderer_image_builds_the_same_runtime_as_the_wine_probe(self):
         renderer_dockerfile = (ROOT / 'docker/renderer/Dockerfile').read_text()
@@ -732,6 +749,12 @@ class ContainerLayoutTest(unittest.TestCase):
             self.assertIn(package, wine_dockerfile)
         self.assertIn('RCC_READY_TIMEOUT', sh)
         self.assertIn("'http://127.0.0.1:64989/'", (ROOT / 'docker/renderer/renderer.py').read_text())
+
+    def test_the_probe_asks_about_the_hosts_this_stack_uses(self):
+        # The probe is a diagnostic, so a drifted default would describe another stack.
+        environment = self.compose()['renderer']['environment']
+        self.assertEqual(probe_rcc_image.DEFAULT_ASSET_BASE, environment['RENDERER_ASSET_BASE_URL'])
+        self.assertEqual(probe_rcc_image.DEFAULT_WEBSITE, environment['WEBSITE_BASE_URL'])
 
     def test_the_website_still_delivers_assets_without_a_renderer(self):
         # The renderer profile is optional: nothing else may depend on it.
@@ -827,9 +850,23 @@ class ProbeTest(unittest.TestCase):
         self.assertIn("sys.path.insert(0, '/app')", program, 'the probe reuses the renderer client')
         start = program.index('lua = ') + len('lua = ')
         lua = json.loads(program[start:program.index('\n', start)])
-        for call in ('SetBaseUrl', 'GetObjects', 'ClickTexture(assetUrl', 'PreloadAsync',
-                     "'rbxassetid://'", 'ClickTextureStaticPng'):
+        for call in ('SetBaseUrl', 'GetObjects', "ThumbnailGenerator:ClickTexture(url",
+                     'ContentProvider:SetBaseUrl'):
             self.assertIn(call, lua, call)
+        self.assertNotIn('__PLACEHOLDER__', lua, 'the placeholder length must be substituted')
+        self.assertIn('1239', lua, 'the probe names the script placeholder by its length')
+
+    def test_the_matrix_asks_rcc_about_every_url_the_script_could_fetch(self):
+        # The shipped script builds its own asset URL from the base URL it is given, so
+        # the only way to know which host names RCC accepts is to click all of them.
+        matrix = dict((name, url) for name, url in
+                      probe_rcc_image.url_matrix(9, 'http://www.silrev.biz', 'http://website:5000'))
+        self.assertEqual(matrix['asset_website_http'], 'http://website:5000/asset/?id=9')
+        self.assertEqual(matrix['asset_trusted_http'], 'http://www.silrev.biz/asset/?id=9')
+        self.assertEqual(matrix['asset_trusted_https'], 'https://www.silrev.biz/asset/?id=9')
+        self.assertEqual(matrix['asset_rbxassetid'], 'rbxassetid://9')
+        self.assertEqual(matrix['static_website_http'], 'http://website:5000/img/Audio.png')
+        self.assertEqual(matrix['static_trusted_http'], 'http://www.silrev.biz/img/Audio.png')
 
     def test_the_job_is_the_json_spec_this_build_accepts(self):
         # RCC 2020 rejects a raw Lua chunk with "Attempted to execute with invalid JSON":
@@ -852,6 +889,90 @@ class ProbeTest(unittest.TestCase):
 
     def test_a_probe_that_cannot_run_is_reported_not_raised(self):
         self.assertIn('could not run', probe_rcc_image.run_probe(9, run=lambda program: (1, 'no such service')))
+
+
+class RendererAssetBaseTest(unittest.TestCase):
+    """RCC only trusts the host names compiled into it, so its URLs use the asset base."""
+
+    def service(self):
+        return renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite(), placeholders={})
+
+    def test_rcc_is_given_the_trusted_host_and_the_renderer_keeps_the_service_url(self):
+        with mock.patch.dict(os.environ, {'RENDERER_ASSET_BASE_URL': 'http://www.silrev.biz/',
+                                          'WEBSITE_BASE_URL': 'http://website:5000'}):
+            service = self.service()
+        # The renderer's own calls (the appearance document) keep the service URL: no
+        # trust check is involved in them, and the service name always resolves.
+        self.assertEqual(service.base_url, service.website.base_url)
+        self.assertEqual(service.asset_base_url, 'http://www.silrev.biz')
+        self.assertEqual(service.asset_url(7), 'http://www.silrev.biz/asset/?id=7')
+        for arguments in (service.arguments_image({'assetId': 7})[1],
+                          service.arguments_model({'assetId': 7})[1],
+                          service.arguments_hat({'assetId': 7})[1],
+                          service.arguments_mesh({'assetId': 7})[1]):
+            self.assertIn('http://www.silrev.biz', arguments)
+            self.assertNotIn('http://website:5000', arguments)
+        # The avatar scripts fetch the appearance document themselves, so that URL goes
+        # to RCC as well and must use the trusted name too.
+        self.assertEqual(service.appearance_url(3),
+                         'http://www.silrev.biz/v1.1/avatar-fetch?userId=3')
+        avatar_script, avatar_arguments = service.arguments_avatar({'userId': 3})
+        # Avatar.lua (R6) declares characterAppearanceUrl, baseUrl, fileExtension, x, y.
+        self.assertEqual(avatar_script, 'Avatar')
+        self.assertEqual(avatar_arguments[0], 'http://www.silrev.biz/v1.1/avatar-fetch?userId=3')
+        self.assertEqual(avatar_arguments[1], 'http://www.silrev.biz')
+        self.assertEqual(service.arguments_headshot({'userId': 3})[1][0], 'http://www.silrev.biz')
+
+    def test_without_the_override_rcc_gets_the_website_service(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('RENDERER_ASSET_BASE_URL', None)
+            service = self.service()
+        self.assertEqual(service.asset_base_url, service.base_url)
+
+
+class AssetHostGuardTest(unittest.TestCase):
+    """The renderer must never let RCC fetch a thumbnail asset from outside this stack."""
+
+    @staticmethod
+    def resolver(mapping):
+        def resolve(host, port=None, type=None):
+            if host not in mapping:
+                raise OSError(f'Name or service not known: {host}')
+            return [(2, 1, 6, '', (address, port or 0)) for address in mapping[host]]
+        return resolve
+
+    def test_a_name_that_resolves_to_the_website_is_accepted(self):
+        ok, message = renderer.verify_asset_host(
+            'http://www.silrev.biz', 'http://website:5000',
+            self.resolver({'www.silrev.biz': ['172.20.0.4'], 'website': ['172.20.0.4']}))
+        self.assertTrue(ok, message)
+        self.assertIn('local website', message)
+
+    def test_a_name_that_resolves_elsewhere_is_refused(self):
+        ok, message = renderer.verify_asset_host(
+            'http://www.silrev.biz', 'http://website:5000',
+            self.resolver({'www.silrev.biz': ['93.184.216.34'], 'website': ['172.20.0.4']}))
+        self.assertFalse(ok, message)
+        self.assertIn('93.184.216.34', message)
+        self.assertIn('not from elsewhere', message)
+
+    def test_a_name_that_does_not_resolve_is_refused(self):
+        ok, message = renderer.verify_asset_host(
+            'http://www.silrev.biz', 'http://website:5000',
+            self.resolver({'website': ['172.20.0.4']}))
+        self.assertFalse(ok, message)
+        self.assertIn('does not resolve', message)
+
+    def test_the_website_service_itself_needs_no_check(self):
+        ok, message = renderer.verify_asset_host('http://website:5000', 'http://website:5000',
+                                                 self.resolver({}))
+        self.assertTrue(ok, message)
+        self.assertIn('website service itself', message)
+
+    def test_no_asset_host_configured_is_not_a_failure(self):
+        with mock.patch.dict(os.environ, {'RENDERER_ASSET_BASE_URL': ''}):
+            ok, message = renderer.verify_asset_host(None, 'http://website:5000', self.resolver({}))
+        self.assertTrue(ok, message)
 
 
 class PixelReaderTest(unittest.TestCase):
