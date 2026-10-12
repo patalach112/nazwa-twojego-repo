@@ -102,9 +102,10 @@ services:
       context: docker
       dockerfile: renderer/Dockerfile
     init: false # The image uses tini with process-group signal forwarding.
-    # Deliberately no depends_on: the renderer needs neither the website nor a healthy
-    # database to start, and depending on the website would make `restart website`
-    # restart the renderer and cut the renders it is doing.
+    # Deliberately no depends_on at all: the renderer needs neither the website nor a
+    # healthy database to start, and depending on the website would make
+    # `restart website` restart the renderer and cut the renders it is doing. RCC runs
+    # in this same container, and supervise.sh waits for it before serving anything.
     environment:
       RCC_BASE_URL: http://website:5000
       RCC_SOAP_NAMESPACE: ${RCC_SOAP_NAMESPACE:-http://silrev.biz/}

@@ -87,6 +87,28 @@ that need a renderer (re-render, thumbnails) remain pending until a renderer
 exists; create, version and manage screens work without one. A native
 (non-Docker) website still needs `cd admin && npm i && npm run build`.
 
+## How a stored thumbnail is named and served
+
+Worth knowing before reading the renderer test, because two conventions look
+alike and are not:
+
+* `UploadAssetContent` hashes the bytes and returns the **plain hash**, while
+  writing `<hash>.png`; `asset_thumbnail.content_url` therefore holds
+  `d41d8c...` without an extension.
+* The website turns that key into the browser-facing URL
+  `/images/thumbnails/<hash>.png` (absolute, built from `BaseUrl`, which for a
+  local stack is the frontend on port 3000, and the frontend proxies `/images`
+  to the website). `ThumbnailMiddleware` serves that file from
+  `docker/local/data/thumbnails/`.
+* A texture render is stored `ReviewApproved`, a model/mesh render
+  `AwaitingApproval` - the asset's own moderation status decides whether the
+  catalog shows it.
+* While there is no thumbnail row at all, the batch API
+  (`POST /v1/batch` with `type: AssetThumbnail`) answers `errorCode 4`,
+  "The requested Ids are invalid, of an invalid type or missing". That is this
+  build's way of saying *no picture yet*, not a failed render: anything waiting
+  for a render has to watch the database row, not that answer.
+
 ## Real account/browser regression
 
 The `Real website accounts` workflow builds these images and runs real Chromium

@@ -157,17 +157,45 @@ def thumbnail_state(client, backend, asset_id):
     return json.loads(body)["data"][0]
 
 
-def wait_for_thumbnail(client, backend, asset_id, what, timeout=RENDER_TIMEOUT):
-    deadline = time.monotonic() + timeout
+def wait_for_thumbnail(client, backend, database, asset_id, what, timeout=RENDER_TIMEOUT):
+    """Waits for the render to reach the database, then for the website to serve it.
+
+    The database row is the progress signal on purpose: while the thumbnail row is
+    missing this build's batch API answers errorCode 4 "The requested Ids are invalid",
+    which is how it reports "no picture yet" - reading that as a failure would call a
+    render in flight a broken renderer. Returns the API entry, the stored moderation
+    status and the stored key.
+    """
+    moderation, key = wait_for_thumbnail_row(database, asset_id, what, timeout)
+    deadline = time.monotonic() + 30
     last = None
     while time.monotonic() < deadline:
         last = thumbnail_state(client, backend, asset_id)
         if last.get("state") == "Completed" and last.get("imageUrl"):
-            return last
-        if last.get("state") == "Error":
-            fail(f"{what} reported a thumbnail error instead of a render: {last}")
-        time.sleep(3)
-    fail(f"{what} never got a finished thumbnail within {timeout}s; last answer: {last}")
+            return last, moderation, key
+        time.sleep(2)
+    fail(f"{what} has thumbnail {key} in the database but the website reported {last}")
+
+
+def served_thumbnail_path(image_url, key, what):
+    """The path the website must serve, which is the stored hash plus the extension."""
+    path = urllib.parse.urlsplit(image_url).path
+    if path != f"/images/thumbnails/{key}.png":
+        fail(f"{what} is served from {path}, not /images/thumbnails/{key}.png")
+    return path
+
+
+def fetch_thumbnail(image_url, backend):
+    """Fetches a thumbnail URL the way a browser does: absolute URLs stay absolute.
+
+    The website builds absolute URLs from its own BaseUrl, and that URL is what the
+    browser gets; a relative one is resolved against the backend as a fallback.
+    """
+    url = image_url if urllib.parse.urlsplit(image_url).scheme else backend + image_url
+    status, _, body = Client().get(url)
+    if status != 200 or body == b"" or b"<html" in body[:200].lower():
+        fail(f"the thumbnail URL {url} answered HTTP {status} with {len(body)} bytes")
+    return url, body
 
 
 def wait_for_thumbnail_row(database, asset_id, what, timeout=RENDER_TIMEOUT):
@@ -185,22 +213,22 @@ def wait_for_thumbnail_row(database, asset_id, what, timeout=RENDER_TIMEOUT):
 def thumbnail_file(thumbnails_directory, image_url):  # noqa: D103
     """Maps a served thumbnail URL back to the file the website wrote."""
     name = urllib.parse.urlsplit(image_url).path.rsplit("/", 1)[-1]
-    if not name.endswith(".png"):
-        name += ".png"
     path = thumbnails_directory / name
     if not path.is_file():
-        fail(f"the reported thumbnail {image_url} has no file in the thumbnail directory")
+        fail(f"the reported thumbnail {image_url} has no file {name} in the thumbnail directory")
     return path
 
 
 def thumbnail_file_for_key(thumbnails_directory, key):
-    # UploadAssetContent appends the extension, so the stored key is "<hash>.png".
-    if not key.endswith(".png"):
-        fail(f"the stored thumbnail key {key} does not name a PNG file")
-    path = thumbnails_directory / key
+    # UploadAssetContent hashes the content and returns the plain hash while writing
+    # "<hash>.png"; the website turns that key into "/images/thumbnails/<hash>.png".
+    if key.endswith(".png"):
+        fail(f"the stored thumbnail key {key} must be the plain hash, without the extension")
+    path = thumbnails_directory / (key + ".png")
     if not path.is_file():
-        fail(f"the stored thumbnail key {key} has no file in the thumbnail directory")
+        fail(f"the stored thumbnail key {key} has no file {path.name} in the thumbnail directory")
     return path
+
 
 
 def wait_for_health(timeout=WARMUP_TIMEOUT):
@@ -364,13 +392,21 @@ def main():
         warmup = health.get("warmup", {})
         while warmup.get("state") == "pending" and time.monotonic() < deadline:
             time.sleep(5)
-            with urllib.request.urlopen(RENDERER_URL + "/healthz", timeout=30) as response:
-                warmup = json.loads(response.read()).get("warmup", {})
+            try:
+                with urllib.request.urlopen(RENDERER_URL + "/healthz", timeout=30) as response:
+                    warmup = json.loads(response.read()).get("warmup", {})
+            except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as error:
+                warmup = {"state": "pending", "detail": f"health is not reachable: {error}"}
         if warmup.get("state") in (None, "pending"):
             fail(f"the renderer never finished its startup warm-up within {WARMUP_TIMEOUT}s: {warmup}")
-        # The warm-up only pays Wine's first-render cost; whether it succeeded is
-        # reported here and the real renders below decide whether rendering works.
-        notice(f"the renderer warm-up reports {warmup}")
+        # The warm-up is a real render through RCC: it pays Wine's first-render cost so
+        # the website's ten-second request is not the one that waits for it, and it says
+        # whether this container can render at all. A failure here is reported now,
+        # before an upload, instead of surfacing as a vague thumbnail error.
+        if warmup.get("state") != "ok":
+            fail(f"the renderer's startup warm-up did not succeed: {warmup}")
+        notice(f"the renderer rendered its warm-up {warmup.get('script')} thumbnail "
+               f"({warmup.get('bytes')} bytes, {warmup.get('seconds')}s) before any upload")
 
         # 1b. The enabled value is the one the renderer holds: a caller without it, or
         #     with a wrong one, is refused further down. This is asserted, not assumed.
@@ -402,8 +438,20 @@ def main():
                                                        make_png(64, 64, colour=colour)),
                                           (200,), f"the {label.lower()} texture import")
             asset_id = int(json.loads(body)["assetId"])
-            entry = wait_for_thumbnail(owner, backend, asset_id, f"{label.lower()} image asset {asset_id}")
+            entry, moderation, key = wait_for_thumbnail(owner, backend, database, asset_id,
+                                                        f"{label.lower()} image asset {asset_id}")
+            # A texture render is approved automatically: the catalog would show a
+            # pending asset as no picture at all, so the stored status is asserted.
+            if moderation != str(APPROVED):
+                fail(f"the {label.lower()} texture thumbnail was stored with moderation "
+                     f"status {moderation}, not approved ({APPROVED})")
+            served_thumbnail_path(entry["imageUrl"], key, f"the {label.lower()} thumbnail")
             path = thumbnail_file(thumbnails_directory, entry["imageUrl"])
+            if path.name != key + ".png":
+                fail(f"the served file {path.name} is not the stored key {key} plus .png")
+            served_url, served = fetch_thumbnail(entry["imageUrl"], backend)
+            if served != path.read_bytes():
+                fail(f"the bytes served from {served_url} are not the stored thumbnail")
             width, height, rows = read_png(path.read_bytes())
             if (width, height) != (THUMBNAIL_EDGE, THUMBNAIL_EDGE):
                 fail(f"the stored thumbnail is {width}x{height}, not {THUMBNAIL_EDGE}x{THUMBNAIL_EDGE}")
@@ -414,11 +462,8 @@ def main():
             if matching < len(samples) // 2:
                 fail(f"the {label.lower()} render does not show the uploaded colour "
                      f"({matching}/{len(samples)}): {samples}")
-            served_status, _, served = Client().get(backend + entry["imageUrl"])
-            if served_status != 200 or served == b"" or b"<html" in served[:200].lower():
-                fail(f"the website did not serve the thumbnail at {entry['imageUrl']} (HTTP {served_status})")
             rendered[label] = (path.read_bytes(), entry["imageUrl"], samples[0])
-            notice(f"{label.lower()} texture {asset_id} rendered as {entry['imageUrl']} "
+            notice(f"{label.lower()} texture {asset_id} rendered as {key}.png, served at {served_url}, "
                    f"showing {samples[0]}")
         if rendered["Red"][0] == rendered["Green"][0]:
             fail("two different uploaded textures produced the same thumbnail file")
@@ -434,18 +479,20 @@ def main():
                                                    MODEL_FIXTURE.read_bytes(), asset_type="Model"),
                                       (200,), "the model import")
         model_id = int(json.loads(body)["assetId"])
-        model_entry = wait_for_thumbnail(owner, backend, model_id, f"model asset {model_id}")
+        model_entry, moderation, key = wait_for_thumbnail(owner, backend, database, model_id,
+                                                          f"model asset {model_id}")
         rows = psql(database, "SELECT moderation_status, content_url FROM asset_thumbnail "
                               f"WHERE asset_id = {model_id};")
         if len(rows) != 1:
             fail(f"model asset {model_id} must have exactly one thumbnail row, database said: {rows}")
-        moderation, key = rows[0].split("|")
+        if rows[0] != moderation + "|" + key:
+            fail(f"the database row {rows[0]} and the served thumbnail {moderation}|{key} disagree")
         if moderation != str(AWAITING_APPROVAL):
             fail(f"the model thumbnail was stored with moderation status {moderation}, "
                  f"not awaiting approval ({AWAITING_APPROVAL})")
-        if not model_entry["imageUrl"].endswith(key):
-            fail(f"the served thumbnail URL {model_entry['imageUrl']} does not point at the stored {key}")
+        served_thumbnail_path(model_entry["imageUrl"], key, "the model thumbnail")
         model_path = thumbnail_file_for_key(thumbnails_directory, key)
+        fetch_thumbnail(model_entry["imageUrl"], backend)
         model_width, model_height, _ = read_png(model_path.read_bytes())
         if (model_width, model_height) != (THUMBNAIL_EDGE, THUMBNAIL_EDGE):
             fail(f"the model thumbnail is {model_width}x{model_height}, not {THUMBNAIL_EDGE}x{THUMBNAIL_EDGE}")

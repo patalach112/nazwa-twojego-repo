@@ -274,6 +274,48 @@ class ContainerLayoutTest(unittest.TestCase):
                       (ROOT / 'docker/renderer/Dockerfile').read_text())
 
 
+class WebsiteThumbnailContractTest(unittest.TestCase):
+    """The website behaviour the end-to-end test encodes, checked without Docker.
+
+    `scripts/test_local_renderer.py` cannot run in a plain job: it needs the whole stack.
+    These assertions read the website's own code, so a change there fails here with the
+    reason instead of turning the integration test into a mysterious timeout.
+    """
+
+    def source(self, relative):
+        return (ROOT / relative).read_text()
+
+    def test_the_stored_thumbnail_key_is_the_plain_hash(self):
+        # UploadAssetContent hashes the PNG and returns the hash while writing
+        # "<hash>.png", so asset_thumbnail.content_url has no extension.
+        service = self.source('Roblox/Roblox.Services/Assets/AssetsService.cs')
+        method = service.split('private async Task<string> UploadAssetContent')[1].split('public Task DeleteAssetContent')[0]
+        self.assertIn('var hash = plainHash;', method)
+        self.assertIn('hash += "." + extension;', method)
+        self.assertEqual(method.count('return plainHash;'), 2,
+                         'both the existing-file and the written-file path return the plain hash')
+
+    def test_asset_thumbnails_are_served_as_the_hash_plus_png(self):
+        service = self.source('Roblox/Roblox.Services/Thumbnails.cs')
+        self.assertIn('c.imageUrl = "/images/thumbnails/" + c.imageUrl + ".png";', service)
+
+    def test_image_textures_are_approved_and_models_wait_for_staff(self):
+        service = self.source('Roblox/Roblox.Services/Assets/AssetsService.cs')
+        texture = service.split('private async Task CreateAssetTextureThumbnail')[1].split('private async Task CreatePackageThumbnail')[0]
+        self.assertIn('UploadThumbnail(assetId, response, 420, 420, ModerationStatus.ReviewApproved)', texture)
+        model = service.split('private async Task CreateModelThumbnail')[1].split('private async Task CreateMeshPartThumbnail')[0]
+        self.assertIn('UploadThumbnail(assetId, render, 420, 420, ModerationStatus.AwaitingApproval)', model)
+
+    def test_a_missing_thumbnail_answers_with_this_builds_pending_error(self):
+        # While the thumbnail row is missing the batch API reports errorCode 4, which is
+        # how this build says "no picture yet": the integration test must wait for the
+        # database row instead of reading that answer as a failed render.
+        controller = self.source('Roblox/Roblox.Website/Controllers/RobloxApi/Thumbnails.cs')
+        self.assertIn('errorCode = 4,', controller)
+        self.assertIn('state = ThumbnailState.Error,', controller)
+        self.assertIn('c.imageUrl == null ? ThumbnailState.Pending', self.source('Roblox/Roblox.Services/Thumbnails.cs'))
+
+
 class AppearanceTest(unittest.TestCase):
     """The appearance document is the website's; only its shape is assumed."""
 
