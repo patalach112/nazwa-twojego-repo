@@ -32,6 +32,7 @@ public static class Configuration
     public static string AdminBundleDirectory { get; set; }
     public static string LuaScriptsDirectory { get; set; }
     public static string EconomyChatBundleDirectory { get; set; }
+    public static bool LocalRegistrationEnabled { get; set; }
     public static string BaseUrl { get; set; }
     public static string ShortBaseUrl { get; set; }
     public static string HCaptchaPublicKey { get; set; }

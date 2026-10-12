@@ -140,6 +140,7 @@ async function main() {
       await context.clearCookies();
       await page.goto(origin + '/');
       assert.equal(await page.locator('nav').getByRole('link', {name: 'Login', exact: true}).getAttribute('href'), '/auth/accountlogin');
+      assert.equal(await page.locator('nav').getByRole('link', {name: 'Sign Up', exact: true}).getAttribute('href'), '/auth/signup');
       const redirect = await context.request.get(origin + '/login', {maxRedirects: 0});
       assert.equal(redirect.status(), 307);
       assert.equal(redirect.headers().location, '/auth/accountlogin');

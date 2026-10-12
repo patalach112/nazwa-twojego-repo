@@ -19,7 +19,8 @@ namespace Roblox.Website.Pages.Auth;
 public enum SignupMethod
 {
     Application = 1,
-    InviteUrl
+    InviteUrl,
+    Local
 }
 
 public class Signup : RobloxPageModel
@@ -36,6 +37,8 @@ public class Signup : RobloxPageModel
     public string? inviterUsername { get; set; }
     public string? errorMessage { get; set; }
     public bool signupDisabled { get; set; }
+    public bool localRegistration => Configuration.LocalRegistrationEnabled
+        && string.IsNullOrEmpty(applicationId) && string.IsNullOrEmpty(inviteId);
 
     private void FeatureCheck()
     {
@@ -69,10 +72,10 @@ public class Signup : RobloxPageModel
     {
         FeatureCheck();
 
+        if (localRegistration)
+            return userSession == null ? new PageResult() : new RedirectResult("/home");
         if (string.IsNullOrEmpty(applicationId) && string.IsNullOrEmpty(inviteId))
-        {
-            return new RedirectResult("/");
-        }
+            return new RedirectResult("/auth/application");
 
         if (userSession != null && applicationId is {Length: <= 128 and > 1})
         {
@@ -99,7 +102,7 @@ public class Signup : RobloxPageModel
     {
         // Error messages are intentionally vague. Let's keep it that way.
 
-        if (string.IsNullOrEmpty(applicationId) && string.IsNullOrEmpty(inviteId))
+        if (!localRegistration && string.IsNullOrEmpty(applicationId) && string.IsNullOrEmpty(inviteId))
         {
             Writer.Info(LogGroup.SignUp, "Sign up failed, empty applicationId and inviteId");
             errorMessage = InvalidIdMessage;
@@ -108,7 +111,9 @@ public class Signup : RobloxPageModel
 
         await SetupInvite();
 
-        FeatureFlags.FeatureCheck(FeatureFlag.SignupEnabled);
+        FeatureCheck();
+        if (signupDisabled) return new PageResult();
+        if (localRegistration && userSession != null) return Redirect("/home");
         var ip = ControllerBase.GetIP(ControllerBase.GetRequesterIpRaw(HttpContext));
         // Initial cooldown check - to prevent people spamming attempts
         if (!await services.cooldown.TryCooldownCheck($"signup:step1:" + ip, TimeSpan.FromSeconds(5)))
@@ -120,7 +125,19 @@ public class Signup : RobloxPageModel
 
         var redlockKey = "";
         SignupMethod method;
-        if (applicationId != null)
+        if (localRegistration)
+        {
+            method = SignupMethod.Local;
+            // A username lock serializes duplicate local signup attempts without
+            // bypassing validation, the IP cooldown or account creation limits.
+            if (!await services.users.IsUsernameValid(username))
+            {
+                errorMessage = "Invalid username. Use 3 to 20 characters and start and end with a letter or number.";
+                return new PageResult();
+            }
+            redlockKey = "LocalSignupUsername:v1:" + username.ToLowerInvariant();
+        }
+        else if (applicationId != null)
         {
             Writer.Info(LogGroup.SignUp, "Sign up has application id");
             FeatureFlags.FeatureCheck(FeatureFlag.ApplicationsEnabled);
@@ -253,24 +270,19 @@ public class Signup : RobloxPageModel
             sessionId = sess,
             createdAt = DateTimeOffset.Now.ToUnixTimeSeconds(),
         });
-        HttpContext.Response.Cookies.Append(Middleware.SessionMiddleware.CookieName, sessionCookie, new CookieOptions()
-        {
-            Secure = true,
-            Expires = DateTimeOffset.Now.Add(TimeSpan.FromDays(364)),
-            IsEssential = true,
-            Path = "/",
-            SameSite = SameSiteMode.Lax,
-        });
-        
+        HttpContext.Response.Cookies.Append(Middleware.SessionMiddleware.CookieName, sessionCookie,
+            Lib.SessionCookieOptions.Create(Configuration.BaseUrl));
+
         // Create default place for user
-        if (FeatureFlags.IsEnabled(FeatureFlag.CreatePlaceSelfService))
+        // Local account creation must not depend on game validation/rendering.
+        if (method != SignupMethod.Local && FeatureFlags.IsEnabled(FeatureFlag.CreatePlaceSelfService))
         {
             // create place!
             var asset = await services.assets.CreatePlace(createdUser.userId, username, CreatorType.User, createdUser.userId);
             // create universe too
             await services.games.CreateUniverse(asset.placeId);
         }
-        long? refferedBy = await services.users.GetUserRefferedBy(applicationId);
+        long? refferedBy = applicationId == null ? null : await services.users.GetUserRefferedBy(applicationId);
         if (refferedBy != null)
         {
             // Give the user 50 robux for signing up

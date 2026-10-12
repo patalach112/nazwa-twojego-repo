@@ -6,7 +6,7 @@
 }
 
 <div class="container mt-4">
-    @if (string.IsNullOrEmpty(Model.applicationId))
+    @if (!Roblox.Configuration.LocalRegistrationEnabled && string.IsNullOrEmpty(Model.applicationId))
     {
         <div class="row">
             <div class="col-12">
@@ -26,7 +26,7 @@
                 }
                 else
                 {
-                    <p>If you do not have an account, you can <a href="/auth/application">create one here</a>.</p>
+                    <p>If you do not have an account, you can <a href="/auth/signup">create one here</a>.</p>
                 }
                 @if (Model.errorMessage != null)
                 {
@@ -51,7 +51,7 @@
                     @Html.AntiForgeryToken()
                     <div class="d-grid gap-2 mt-4 mb-4">
                         <input disabled="@Model.loginDisabled" class="btn btn-primary btn-custom" type="submit" value="Login" id="login-submit"/>
-                    @if (!Model.loginDisabled)
+                    @if (!Model.loginDisabled && !string.IsNullOrEmpty(Roblox.Configuration.DiscordClientId))
                     {
                         <hr class="m-0 my-2">
 

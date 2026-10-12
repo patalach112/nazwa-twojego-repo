@@ -121,7 +121,57 @@ def main():
                     login_result = response.read().decode()
                 if "Incorrect username or password" not in login_result:
                     raise RuntimeError("The local login without captcha did not reach normal credential validation")
-                print("Full website startup, public routing without browser gates, captcha-free local login and retained account/game-server authorization passed on Linux.")
+                # Register through the real Razor form and authenticate the result.
+                # No direct SQL seed, forged session or fixture account is involved.
+                signup_url = f"http://127.0.0.1:{port}/auth/signup"
+                with login_opener.open(signup_url, timeout=5) as response:
+                    signup_html = response.read().decode()
+                signup_form = FormTokenParser()
+                signup_form.feed(signup_html)
+                if not signup_form.token:
+                    raise RuntimeError("Local signup did not render a normal antiforgery-protected form")
+                local_username = "Local" + uuid.uuid4().hex[:12]
+                local_password = "local-smoke-" + uuid.uuid4().hex
+                signup_request = urllib.request.Request(signup_url, data=urllib.parse.urlencode({
+                    "username": local_username, "password": local_password,
+                    "__RequestVerificationToken": signup_form.token,
+                }).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+                try:
+                    login_opener.open(signup_request, timeout=15).close()
+                    raise RuntimeError("Local signup did not redirect to the dashboard")
+                except urllib.error.HTTPError as error:
+                    if error.code != 302 or error.headers.get("Location") != "/home":
+                        raise RuntimeError(f"Local signup returned HTTP {error.code} instead of a dashboard redirect") from None
+                    cookie = error.headers.get("Set-Cookie", "")
+                    if ".PEKOSECURITY=" not in cookie or "httponly" not in cookie.lower():
+                        raise RuntimeError("Local signup did not issue an HttpOnly session cookie")
+                account_url = f"http://127.0.0.1:{port}/apisite/users/v1/users/authenticated"
+                with login_opener.open(account_url, timeout=10) as response:
+                    created_account = json.load(response)
+                if created_account.get("name") != local_username or not created_account.get("id"):
+                    raise RuntimeError("The newly registered account did not authenticate through the real session middleware")
+                # A different cookie jar proves password login rather than reusing
+                # the signup session. Retain the existing per-IP login cooldown.
+                time.sleep(5.1)
+                password_opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+                with password_opener.open(login_url, timeout=5) as response:
+                    password_form = FormTokenParser()
+                    password_form.feed(response.read().decode())
+                valid_login = urllib.request.Request(login_url, data=urllib.parse.urlencode({
+                    "username": local_username, "password": local_password,
+                    "__RequestVerificationToken": password_form.token,
+                }).encode(), headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+                try:
+                    password_opener.open(valid_login, timeout=10).close()
+                    raise RuntimeError("Valid password login did not redirect")
+                except urllib.error.HTTPError as error:
+                    if error.code != 302 or error.headers.get("Location") != "/home":
+                        raise RuntimeError(f"Valid password login returned HTTP {error.code}") from None
+                with password_opener.open(account_url, timeout=10) as response:
+                    signed_in = json.load(response)
+                if signed_in.get("id") != created_account["id"]:
+                    raise RuntimeError("Password login did not authenticate the registered account")
+                print("Full Linux website startup, real local registration/password login, public routing and retained account/game-server authorization passed.")
             except Exception:
                 # Never print generated credentials while diagnosing startup errors.
                 text = log_path.read_text()

@@ -17,7 +17,7 @@ const IndexPage = () => {
         <p>Discover community games, build something new, and play with friends.</p>
         <div className='d-flex flex-wrap gap-2'>
           <a className='btn btn-primary' href='/auth/accountlogin'>Login</a>
-          <a className='btn btn-success' href='/auth/application'>Sign Up</a>
+          <a className='btn btn-success' href='/auth/signup'>Sign Up</a>
         </div>
       </main>
       <GamesPageStore.Provider><Games /></GamesPageStore.Provider>

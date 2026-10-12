@@ -35,7 +35,7 @@ const LoginArea = () => {
   // retired cookie-import screen or the disabled /apisite/auth/v2/login route.
   return <div className={s.loginContainer}>
     <a className={s.link} href='/auth/accountlogin'>Login</a>
-    <a className={`${s.link} ${s.signupLink}`} href='/auth/application'>Sign Up</a>
+    <a className={`${s.link} ${s.signupLink}`} href='/auth/signup'>Sign Up</a>
   </div>;
 };
 

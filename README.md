@@ -356,6 +356,26 @@ legacy game-server expecting it to supply the missing Linux RCC runtime.
 
 `start.bat` starts the legacy components in separate windows; it does not start the new arbiter. Generate or copy the configs first, then run `npm start` from `game-arbiter/` separately. The Windows RCC binaries do not supply the unfinished game launcher. See **WHAT IS STILL MISSING** above.
 
+## local accounts without Discord
+
+New local configs enable `LocalRegistrationEnabled`. `/auth/signup` creates a
+real username/password account without a Discord application or invitation;
+`/auth/application` redirects to that form in this mode. IP cooldowns,
+username/password validation, account status, staff checks and Razor antiforgery
+remain. Password recovery needs its own configuration, so save your password.
+Local signup does not create a starter place, contact a renderer or enable games.
+
+Missing or false `LocalRegistrationEnabled` preserves the original application
+approval requirement. Existing configs are never automatically changed. Session
+cookies remain HttpOnly and Secure on HTTPS deployments; explicit HTTP local
+setups can send their cookies without relying on browser localhost exceptions.
+Use HTTPS before making a deployment public.
+
+Avatar rendering is optional and disabled without `Render:BaseUrl`. Configure
+an owned renderer and, if required, `Render:Authorization`; the original
+hard-coded third-party renderer address is no longer contacted. Disabled
+rendering leaves pending thumbnails, not proof of a working avatar renderer.
+
 ## common gotchas
 
 - **`game-servers.json` and `appsettings.json` are required**, not optional. Config files are gitignored, so they will never show up after a fresh clone. `./scripts/setup.sh` writes both.

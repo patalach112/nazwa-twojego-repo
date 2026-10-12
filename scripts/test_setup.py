@@ -76,6 +76,7 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(arbiter["authorization"], website["ArbiterAuthorization"])
         self.assertEqual(server["authorization"], website["GameServerAuthorization"])
         self.assertFalse(website["HCaptcha"]["Enabled"])
+        self.assertTrue(website["LocalRegistrationEnabled"])
         self.assertEqual(server["websiteBotAuth"], website["BotAuthorization"])
         secrets = [website[key] for key in ("ArbiterAuthorization", "GameServerAuthorization", "BotAuthorization")]
         secrets += [website[key] for key in ("RccAuthorization", "Authorization", "VerificationSecret")]

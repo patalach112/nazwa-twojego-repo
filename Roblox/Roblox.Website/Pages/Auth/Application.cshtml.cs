@@ -104,6 +104,7 @@ public class Application : RobloxPageModel
 
     public async Task<IActionResult> OnGet()
     {
+        if (Configuration.LocalRegistrationEnabled) return Redirect("/auth/signup");
         try
         {
             FeatureFlags.FeatureCheck(FeatureFlag.ApplicationsEnabled);
@@ -157,6 +158,7 @@ public class Application : RobloxPageModel
 
     public async Task<IActionResult> OnPost()
     {
+        if (Configuration.LocalRegistrationEnabled) return Redirect("/auth/signup");
         try
         {
             FeatureFlags.FeatureCheck(FeatureFlag.ApplicationsEnabled);
