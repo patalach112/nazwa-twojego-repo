@@ -20,6 +20,8 @@ jobs:
           node-version: 22
       - name: Test isolated persistent Docker configuration
         run: python3 -m unittest discover -s scripts -p test_local_docker.py -v
+      - name: Compile the asset import check before building the stack
+        run: python3 -m py_compile scripts/test_asset_import.py
       - name: Generate disposable real database configs
         run: python3 scripts/configure_local_docker.py --database-name marine_website_tests --project-name marine-website-tests --test
       - name: Build and start the actual website, frontend, migrations, Postgres and Redis
@@ -34,6 +36,10 @@ jobs:
         env:
           REAL_WEBSITE_TEST: '1'
         run: node frontend/test/real-website.cjs
+      - name: Import one PNG through the real admin API and verify the local store
+        env:
+          ASSET_IMPORT_TEST: '1'
+        run: python3 scripts/test_asset_import.py
       - name: Annotate Docker failures without exposing private configuration
         if: failure()
         run: |

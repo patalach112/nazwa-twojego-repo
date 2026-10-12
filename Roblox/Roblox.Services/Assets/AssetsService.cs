@@ -829,6 +829,16 @@ public class AssetsService : ServiceBase, IService
     /// <exception cref="Exception"></exception>
     public async Task RenderAssetAsync(long assetId, Models.Assets.Type assetType, CancellationToken? cancellationToken = null)
     {
+        // Rendering is optional and off by default. Without a configured renderer the
+        // asset is still stored and served and its thumbnail simply stays pending;
+        // failing here would only produce an unobserved background exception per upload.
+        if (!RenderingHandler.IsConfigured)
+        {
+            Writer.Info(LogGroup.AssetRender,
+                "Rendering is disabled (Render:BaseUrl is empty); asset {0} of type {1} keeps a pending thumbnail",
+                assetId, assetType);
+            return;
+        }
         if (inqueueAssetIds.Contains(assetId))
         {
             Writer.Info(LogGroup.AssetRender, "Already rendering asset {0}", assetId);

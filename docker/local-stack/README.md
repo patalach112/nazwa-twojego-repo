@@ -99,6 +99,29 @@ browser script requires explicit opt-in, a matching `*_tests` database and
 loopback URLs. It creates actual test accounts and restarts containers, so do
 not point it at personal or shared production data.
 
+## Local asset import check
+
+`scripts/test_asset_import.py` imports one controlled PNG through the real
+`/admin-api/api/asset/create` endpoint of the same disposable stack and verifies
+the stored rows, the content-addressed file in `docker/local/data/assets/`,
+anonymous delivery through `/asset/?id=`, survival of a `website` restart, the
+refusal of a renamed text file, a path-like file name and oversized uploads, and
+that a disabled renderer leaves the thumbnail pending instead of reporting a
+finished one. It registers its own accounts, writes the new user id into
+`OwnerUserId` (the documented mechanism, not SQL) and restores
+`docker/local/website.json` afterwards.
+
+```bash
+python3 scripts/configure_local_docker.py \
+  --database-name marine_website_tests --project-name marine-website-tests --test
+./scripts/local-stack.sh up --build -d
+ASSET_IMPORT_TEST=1 python3 scripts/test_asset_import.py
+```
+
+It refuses to run against a non-`*_tests` configuration. Rendering, avatar
+thumbnails, the admin panel UI and game joins are **not** covered by this check;
+a green run only proves the local import/delivery path above.
+
 ## Still outside this stack
 
 There is no operational RCC launcher/proxy or verified real game join. The

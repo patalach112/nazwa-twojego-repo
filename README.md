@@ -192,6 +192,28 @@ security fix. Cookie-authenticated API writes are no longer protected by that
 middleware. Do not expose this configuration to a public deployment without a
 replacement CSRF/origin protection strategy. CORS alone is not a replacement.
 
+# LOCAL ASSET IMPORT CHECK
+
+The admin asset import (`POST /admin-api/api/asset/create`, staff-only) stores
+uploads under `Directories:Asset` with a SHA-256 file name and serves them back
+through `GET|POST /asset/?id=`. Image and decal uploads are now decoded before
+they are stored, images are capped at 8 MB, the endpoint body is capped at
+30 MB, and a file name that contains a path is refused instead of being
+normalised. A rejected upload creates no asset row and no file.
+
+`scripts/test_asset_import.py` proves that path end to end against the
+disposable Docker stack (`*_tests` database): it verifies anonymous and ordinary
+accounts are refused, the `asset`/`asset_version` rows and the stored file, the
+exact delivered PNG bytes, a `website` restart, all rejection cases without
+secret leakage, and that a disabled renderer leaves the thumbnail pending. See
+[docker/local-stack/README.md](docker/local-stack/README.md) for the two
+commands and the limits of the check. Rendering, avatar thumbnails, the admin
+panel UI, asset queues and game joins remain unverified.
+
+When `Render:BaseUrl` is empty, `AssetsService` skips rendering entirely instead
+of starting a request that would fail in the background; thumbnails stay
+pending, accounts and uploads are unaffected.
+
 # HOW TO SETUP
 
 ## things you need

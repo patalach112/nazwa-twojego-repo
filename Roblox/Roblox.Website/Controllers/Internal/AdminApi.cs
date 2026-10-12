@@ -2324,7 +2324,48 @@ Thank you for your understanding,
         };
     }
 
+    // Admin uploads are the only path that accepts caller-supplied asset bytes. Keep one
+    // explicit bound instead of relying on the server default, so an oversized upload is
+    // refused with a clean 4xx before anything reaches the asset tables or the disk.
+    private const long MaximumUploadBytes = 30_000_000;
+    private const long MaximumImageUploadBytes = 8 * 1024 * 1024;
+
+    /// <summary>
+    /// Rejects an admin image upload that could not be served as a real image asset.
+    /// The content is addressed by its SHA-256 hash, so a path inside the file name could
+    /// never escape the asset directory; a name that looks like a path is still a broken
+    /// client or a probe and is refused instead of being silently normalised. Decoding the
+    /// file keeps a renamed text file from being stored as an image asset that the startup
+    /// image-metadata repair pass would delete later.
+    /// </summary>
+    private async Task ValidateImageUpload(IFormFile upload, Stream content)
+    {
+        var providedName = upload.FileName ?? string.Empty;
+        var fileName = Path.GetFileName(providedName);
+        if (string.IsNullOrEmpty(fileName) || fileName != providedName || fileName is "." or "..")
+            throw new BadRequestException(0, "The image file name must be a plain file name");
+
+        if (upload.Length > MaximumImageUploadBytes)
+            throw new BadRequestException(0,
+                string.Format("Images may be at most {0} MB", MaximumImageUploadBytes / (1024 * 1024)));
+
+        Roblox.Libraries.Imager? image;
+        try
+        {
+            image = await services.assets.ValidateImage(content);
+        }
+        catch (Exception e) when (e is Roblox.Libraries.InvalidImageException or Roblox.Libraries.UnsupportedImageFormatException)
+        {
+            image = null;
+        }
+
+        if (image == null || image.width <= 0 || image.height <= 0)
+            throw new BadRequestException(0, "The uploaded file is not a readable PNG or JPEG image");
+    }
+
     [HttpPost("asset/create"), StaffFilter(Access.CreateAsset)]
+    [RequestSizeLimit(MaximumUploadBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaximumUploadBytes)]
     public async Task<dynamic> CreateAsset([Required, FromForm] CreateAssetRequest request)
     {
         if (request.isLimitedUnique) request.isLimited = true;
@@ -2402,8 +2443,12 @@ Thank you for your understanding,
         if (request.rbxm != null)
         {
             var fileData = request.rbxm.OpenReadStream();
-            // TODO: we should probably be validating audio and image uploads...
-            if (request.assetTypeId != Type.Audio && request.assetTypeId != Type.EmoteAnimation && request.assetTypeId != Type.Image && request.assetTypeId != Type.Mesh && request.assetTypeId != Type.GamePass && request.assetTypeId != Type.Badge)
+            // TODO: we should probably be validating audio uploads...
+            if (request.assetTypeId is Type.Image or Type.Decal)
+            {
+                await ValidateImageUpload(request.rbxm, fileData);
+            }
+            else if (request.assetTypeId != Type.Audio && request.assetTypeId != Type.EmoteAnimation && request.assetTypeId != Type.Mesh && request.assetTypeId != Type.GamePass && request.assetTypeId != Type.Badge)
             {
                 var isOk = await services.assets.RobloxFileValidation(fileData);
                 if (!isOk)
