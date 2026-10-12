@@ -1,6 +1,7 @@
 import { createUseStyles } from "react-jss";
 import { getTheme, themeType, getLogoStyle, logoStyle } from "../../../services/theme";
 import NavigationStore from "../../../stores/navigation";
+import AuthenticationStore from "../../../stores/authentication";
 
 const faviconImages = {
     [logoStyle.Default]: 'url(/img/favicon.png)',
@@ -85,6 +86,9 @@ const useLogoStyles = createUseStyles({
   },
   openSideNavMobile: {
     display: 'none',
+    border: 0,
+    padding: 0,
+    backgroundColor: 'transparent',
     '@media(max-width: 1324px)': {
       display: 'block',
       float: 'left',
@@ -97,13 +101,14 @@ const useLogoStyles = createUseStyles({
 const Logo = () => {
   const s = useLogoStyles({ theme: getTheme(), logo: getLogoStyle() });
   const navStore = NavigationStore.useContainer();
+  const auth = AuthenticationStore.useContainer();
 
   return <div className={`${s.col} col-3 col-lg-3`}>
-    <div className={s.openSideNavMobile + ' icon-menu'} onClick={() => {
+    {auth.isAuthenticated && <button type='button' aria-label='Open navigation' aria-expanded={navStore.isSidebarOpen} className={s.openSideNavMobile + ' icon-menu'} onClick={() => {
       navStore.setIsSidebarOpen(!navStore.isSidebarOpen);
-    }}></div>
-    <a className={s.imgDesktop} href='/home'></a>
-    <a className={s.imgMobile} href='/home'></a>
+    }} />}
+    <a aria-label='Marine home' className={s.imgDesktop} href='/'></a>
+    <a aria-label='Marine home' className={s.imgMobile} href='/'></a>
     {/*<div className={s.imgMobileWrapper}>
     
     </div>*/}
