@@ -232,7 +232,7 @@ app.UseExceptionHandler("/error");
 //await CommandHandler.Configure("ws://localhost:3189", "hello world of deving 1234");
 //CommandHandler.Configure(configuration.GetSection("Render:BaseUrl").Value, configuration.GetSection("Render:Authorization").Value); // will be removed soon
 
-RenderingHandler.Configure();
+RenderingHandler.Configure(configuration["Render:BaseUrl"], configuration["Render:Authorization"]);
 SessionMiddleware.Configure(sessionJwtKey);
 app.UseTimerMiddleware(); // Must always be last
 Roblox.Services.Signer.SignService.Setup(builder.Environment.ContentRootPath);
