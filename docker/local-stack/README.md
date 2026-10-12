@@ -153,15 +153,15 @@ Rendering stays off until it is enabled on purpose. `scripts/configure_local_doc
 ./scripts/local-stack.sh restart website
 ```
 
-The `rcc-render` service runs the vendored RCC 2020 build from
-`RCCService/RCCService2020` under Wine with the thumbnail scripts from
-`docker/rcc-wine/internalscripts/thumbnails`; the `renderer` service turns the
-website's HTTP render requests into JSON `Thumbnail` jobs and returns real base64
-PNGs (details and limits in `docker/renderer/README.md`). Neither service is
-published into the compose network beyond `renderer:3521`, RCC has no published
-port, and both run without privileges. Switching the profile off
-(`./scripts/local-stack.sh --profile renderer down`) returns the stack to pending
-thumbnails; uploads, delivery and accounts never wait for the renderer.
+The single `renderer` service runs the vendored RCC 2020 build from
+`RCCService/RCCService2020` under Wine *and* the renderer that turns the website's HTTP
+render requests into JSON `Thumbnail` jobs, because RCCService binds its SOAP port to
+its own container's loopback. RCC's own thumbnail scripts are used unmodified. The
+service runs without privileges, with a read-only root, and only its own port is
+published (on `127.0.0.1`); details and limits in `docker/renderer/README.md`.
+Switching the profile off (`./scripts/local-stack.sh --profile renderer down`) returns
+the stack to pending thumbnails; uploads, delivery and accounts never wait for the
+renderer.
 
 `scripts/test_local_renderer.py` proves the whole path against a disposable `*_tests`
 stack: uploads through the real admin API, the website's own render

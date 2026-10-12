@@ -35,7 +35,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SOAP_ENVELOPE = 'http://schemas.xmlsoap.org/soap/envelope/'
 DEFAULT_PORT = 3521
-DEFAULT_RCC_URL = 'http://rcc-render:64989/'
+# RCC listens on the loopback of its own container, which is also this container.
+DEFAULT_RCC_URL = 'http://127.0.0.1:64989/'
 DEFAULT_RCC_NAMESPACE = 'http://silrev.biz/'
 DEFAULT_WEBSITE_URL = 'http://website:5000'
 # The build's own rigs, addressed through its ContentFolder (content/).

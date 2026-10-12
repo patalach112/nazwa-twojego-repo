@@ -3,8 +3,15 @@
 The website's `Roblox.Rendering.RenderingHandler` posts JSON to `Render:BaseUrl` and
 expects `{"success": bool, "message": ..., "data": "<base64 image>"}`. This service is
 that endpoint for the local stack: it turns each request into a JSON `Thumbnail` job
-for RCC 2020 (running under Wine in the `rcc-render` container) and returns the real
-image. Nothing is faked: when a render cannot be produced the answer is a JSON error
+for RCC 2020 and returns the real image.
+
+RCC runs **inside this same container**, started by `supervise.sh` through the launcher
+from `docker/rcc-wine`, because RCCService binds its SOAP port to the loopback of its own
+container: a separate RCC container is healthy inside and answers `Connection refused` to
+everything else. The supervisor waits until RCC really answers SOAP, then becomes the
+renderer so container shutdown reaches the renderer first. RCC gets no privileges, no
+published port and a read-only root; the only published port is the renderer's own 3521,
+bound to `127.0.0.1`. Nothing is faked: when a render cannot be produced the answer is a JSON error
 with a non-2xx status, so the website keeps a pending thumbnail.
 
 ## Enable it (off by default)
@@ -79,7 +86,7 @@ pending instead of being faked:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `RENDERER_PORT` | `3521` | listen port inside the container |
-| `RCC_SOAP_URL` | `http://rcc-render:64989/` | RCC SOAP endpoint |
+| `RCC_SOAP_URL` | `http://127.0.0.1:64989/` | RCC SOAP endpoint, in this container |
 | `RCC_SOAP_NAMESPACE` | `http://silrev.biz/` | SOAP namespace of this build |
 | `WEBSITE_BASE_URL` | `http://website:5000` | where asset and appearance documents come from |
 | `RENDERER_AUTHORIZATION` | unset | overrides the value read from the mounted config |
@@ -93,6 +100,9 @@ pending instead of being faked:
 
 * One render at a time, because RCC renders into a single DataModel. A render queue
   under this lock is what keeps a burst of uploads from corrupting each other's scene.
+* RCC and the renderer share a container and a memory/CPU limit; the renderer is the
+  foreground process, so a stuck RCC is stopped by the same `SIGTERM`/`stop_grace_period`
+  that stops the renderer.
 * Every job gets an `expirationInSeconds` and a matching client timeout, and `CloseJob`
   runs in a `finally` block, so a stuck render is reported and cleaned up instead of
   hammering RCC.

@@ -24,6 +24,8 @@ import sys
 import tempfile
 import threading
 import time
+
+import yaml
 import unittest
 import urllib.error
 import urllib.request
@@ -218,6 +220,53 @@ class LuaContractTest(unittest.TestCase):
         _, arguments = service.arguments_model({'assetId': 12, 'assetUrl': 'http://evil.example/'})
         self.assertEqual(arguments[0], 'http://website.test/asset/?id=12',
                          'the asset URL must come from configuration, never from the request')
+
+
+class ContainerLayoutTest(unittest.TestCase):
+    """RCC binds to its own container's loopback, so both run in one container."""
+
+    def dockerfile_packages(self, path):
+        text = (ROOT / path).read_text()
+        start = text.index('apt-get install')
+        block = text[start:text.index('&& rm -rf', start)]
+        packages = set()
+        for line in block.splitlines()[1:]:
+            packages.update(line.replace('\\', ' ').split())
+        return {package for package in packages if package and not package.startswith('-')}
+
+    def test_the_renderer_image_installs_the_same_runtime_as_the_rcc_image(self):
+        """A drifting package list would make the two images behave differently."""
+        self.assertEqual(self.dockerfile_packages('docker/renderer/Dockerfile'),
+                         self.dockerfile_packages('docker/rcc-wine/Dockerfile'))
+
+    def test_the_renderer_image_reuses_the_rcc_launcher_instead_of_copying_it(self):
+        text = (ROOT / 'docker/renderer/Dockerfile').read_text()
+        for name in ('entrypoint.sh', 'run-wine.sh', 'healthcheck.py', 'required-thumbnail-scripts.txt'):
+            self.assertIn(f'rcc-wine/{name}', text,
+                          f'{name} must come from docker/rcc-wine, not be duplicated')
+
+    def test_the_supervisor_starts_rcc_waits_for_soap_and_becomes_the_renderer(self):
+        text = (ROOT / 'docker/renderer/supervise.sh').read_text()
+        self.assertIn('/usr/local/bin/entrypoint.sh &', text, 'RCC must run in the background')
+        self.assertIn('healthcheck.py', text, 'the supervisor must wait for a real SOAP answer')
+        self.assertTrue(text.rstrip().endswith('exec python3 /app/renderer.py'),
+                        'the renderer must be the foreground process so shutdown reaches it')
+
+    def test_compose_runs_one_renderer_service_that_builds_this_image(self):
+        compose = yaml.safe_load((ROOT / 'docker-compose.local.yml').read_text())['services']
+        self.assertNotIn('rcc-render', compose, 'RCC has to share the renderer container')
+        renderer = compose['renderer']
+        self.assertEqual(renderer['profiles'], ['renderer'])
+        self.assertEqual(renderer['build'], {'context': 'docker', 'dockerfile': 'renderer/Dockerfile'})
+        self.assertEqual(renderer['environment']['RCC_VERIFY_THUMBNAIL_SCRIPTS'], '1')
+        self.assertEqual(renderer['ports'], ['127.0.0.1:${RENDERER_PORT:-3521}:3521'])
+        self.assertEqual(renderer['cap_drop'], ['ALL'])
+        self.assertTrue(renderer['read_only'])
+
+    def test_the_renderer_defaults_to_the_same_container_loopback(self):
+        self.assertEqual(renderer.DEFAULT_RCC_URL, 'http://127.0.0.1:64989/')
+        self.assertIn('RCC_SOAP_URL=http://127.0.0.1:64989/',
+                      (ROOT / 'docker/renderer/Dockerfile').read_text())
 
 
 class AppearanceTest(unittest.TestCase):

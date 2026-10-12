@@ -14,7 +14,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 DIRECTORY = ROOT / "docker/local"
-SERVICES = ["rcc-render", "renderer", "website"]
+SERVICES = ["renderer", "website"]
 TAIL = 60
 MAX_CHARS = 3000
 

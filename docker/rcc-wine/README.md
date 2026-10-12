@@ -130,6 +130,13 @@ renderer asks for those scripts by name. `docker/renderer/` builds the arguments
 routes it serves, and `scripts/test_renderer_contract.py` parses these shipped files and
 fails when the renderer and a script disagree.
 
+## Where RCC runs in the local stack
+
+This image is the RCC runtime *and* the base of `docker/renderer/Dockerfile`, which adds
+the renderer service to it: RCCService binds its SOAP port to the loopback of its own
+container, so the renderer shares the container and talks to `127.0.0.1:64989`. The
+standalone experiment here is unchanged and still talks to RCC with `docker exec`.
+
 ## Other executables
 
 The four RCC executables have PE machine type `0x14c` (32-bit x86). Several

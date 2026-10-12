@@ -38,6 +38,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check the renderer, its scripts and the Lua contract without Docker
         run: |
+          sh -n docker/renderer/supervise.sh docker/rcc-wine/entrypoint.sh docker/rcc-wine/run-wine.sh
           python3 -m py_compile docker/renderer/renderer.py scripts/test_local_renderer.py \
             scripts/test_renderer_contract.py scripts/renderer_diagnostics.py
           python3 -m unittest discover -s scripts -p test_renderer_contract.py -v
