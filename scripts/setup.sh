@@ -86,7 +86,7 @@ cfg["BaseUrl"] = base_url
 cfg["ArbiterBaseUrl"] = arbiter_url
 # Each service gets the website's value, not a separately generated secret.
 for key in ("ArbiterAuthorization", "GameServerAuthorization", "BotAuthorization", "RccAuthorization",
-            "Authorization", "VerificationSecret", "UserAgentBypassSecret"):
+            "Authorization", "VerificationSecret"):
     cfg[key] = secrets.token_hex(32)
 
 cfg["Directories"].update({

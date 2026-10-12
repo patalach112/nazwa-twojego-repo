@@ -65,7 +65,6 @@ Roblox.Configuration.RccAuthorization = configuration.GetSection("RccAuthorizati
 Roblox.Configuration.ArbiterAuthorization = configuration.GetSection("ArbiterAuthorization").Value!;
 Roblox.Configuration.ArbiterBaseUrl = configuration.GetSection("ArbiterBaseUrl").Value ?? "http://127.0.0.1:4310/";
 Roblox.Configuration.GameServerIp = configuration.GetSection("GameServerIp").Value!;
-Roblox.Configuration.UserAgentBypassSecret = configuration.GetSection("UserAgentBypassSecret").Value!;
 Roblox.Configuration.VerificationSecret = configuration.GetSection("VerificationSecret").Value!;
 Roblox.Configuration.LuaScriptsDirectory = configuration.GetSection("Directories:RCCLuaScripts").Value!;
 
@@ -219,10 +218,8 @@ app.UseMiddleware<ThumbnailMiddleware>(Roblox.Configuration.ThumbnailsDirectory)
 app.UseMiddleware<RobloxLoggingMiddleware>();
 app.UseRobloxPlayerCorsMiddleware(); // cors varies depending on authentication status, so it must be after session middleware
 
-app.UseRobloxCsrfMiddleware();
-app.UseApplicationGuardMiddleware();
-Roblox.Website.Middleware.ApplicationGuardMiddleware.Configure(configuration.GetSection("Authorization").Value!);
-Roblox.Website.Middleware.CsrfMiddleware.Configure(Guid.NewGuid().ToString() + Guid.NewGuid().ToString() + Guid.NewGuid().ToString()); // TODO: This would break if we ever load balance
+// Public routes do not require an application-guard cookie, a particular user
+// agent or the legacy global CSRF token. Sessions and endpoint permissions remain.
 
 app.UseSwagger();
 app.UseSwaggerUI();

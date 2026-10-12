@@ -27,9 +27,10 @@ public sealed class ReportingFixture : IAsyncLifetime
     private int port = 52000;
     public HttpClient Client { get; private set; } = null!;
 
-    private sealed class OnlyReportController : ControllerFeatureProvider
+    private sealed class OnlyReportingControllers : ControllerFeatureProvider
     {
-        protected override bool IsController(TypeInfo typeInfo) => typeInfo.AsType() == typeof(GameServerReportsController);
+        protected override bool IsController(TypeInfo typeInfo) =>
+            typeInfo.AsType() == typeof(GameServerReportsController) || typeInfo.AsType() == typeof(HttpAccessProbeController);
     }
 
     public Task InitializeAsync()
@@ -45,26 +46,22 @@ public sealed class ReportingFixture : IAsyncLifetime
         Services.Cache.Configure(redis);
         Configuration.GameServerAuthorization = Secret;
         Configuration.ArbiterAuthorization = ArbiterSecret;
-        Configuration.UserAgentBypassSecret = "unused-test-user-agent-secret";
         Configuration.BaseUrl = "http://reporting.test";
         Configuration.GameServerIp = "127.0.0.1";
-        ApplicationGuardMiddleware.Configure("a-different-application-guard-secret");
-        CsrfMiddleware.Configure(Guid.NewGuid().ToString());
         server = new TestServer(new WebHostBuilder().ConfigureServices(services =>
         {
             services.AddLogging();
             services.AddScoped<GameServerService>();
             services.AddControllers().AddApplicationPart(typeof(GameServerReportsController).Assembly)
+                .AddApplicationPart(typeof(HttpAccessProbeController).Assembly)
                 .ConfigureApplicationPartManager(manager =>
                 {
                     manager.FeatureProviders.Clear();
-                    manager.FeatureProviders.Add(new OnlyReportController());
+                    manager.FeatureProviders.Add(new OnlyReportingControllers());
                 });
         }).Configure(app =>
         {
             app.UseRouting();
-            app.UseMiddleware<CsrfMiddleware>();
-            app.UseMiddleware<ApplicationGuardMiddleware>();
             app.UseMiddleware<FrontendProxyMiddleware>();
             app.UseEndpoints(endpoints => endpoints.MapControllers());
         }));

@@ -760,10 +760,6 @@ namespace Roblox.Website.Controllers
         public void ClientPresenceAshx(string action, long placeId, long userId, bool IsTeleport)
         {
             return;
-            // if (!ApplicationGuardMiddleware.IsRcc(Request))
-            // {
-            //     return;
-            // }
             // if(action == "disconnect")
             // {
             //     string JobId = await services.gameServer.GetJobIdByUserId(userId);

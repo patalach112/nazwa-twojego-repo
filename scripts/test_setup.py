@@ -77,10 +77,10 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(server["authorization"], website["GameServerAuthorization"])
         self.assertEqual(server["websiteBotAuth"], website["BotAuthorization"])
         secrets = [website[key] for key in ("ArbiterAuthorization", "GameServerAuthorization", "BotAuthorization")]
-        secrets += [website[key] for key in ("RccAuthorization", "Authorization", "VerificationSecret", "UserAgentBypassSecret")]
+        secrets += [website[key] for key in ("RccAuthorization", "Authorization", "VerificationSecret")]
         jwt = self.read(WEBSITE / "local-secrets.json")["Jwt"]
         secrets += [jwt["Sessions"], jwt["Games"]]
-        self.assertEqual(len(set(secrets)), 9)
+        self.assertEqual(len(set(secrets)), 8)
         frontend = self.read("frontend/config.json")
         self.assertEqual(frontend["serverRuntimeConfig"]["backend"]["authorization"], website["Authorization"])
         for secret in secrets:

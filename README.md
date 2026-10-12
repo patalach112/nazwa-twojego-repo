@@ -138,7 +138,8 @@ dotnet test Roblox/Roblox.GameServer.Test/Roblox.GameServer.Test.csproj --config
 The **Game server reports** CI job provisions disposable Postgres/Redis services,
 checks the complete migration chain and rollback, then runs HTTP/lifecycle tests
 with real database and cache operations. The focused ASP.NET TestHost includes
-the CSRF, application guard and frontend proxy bypasses. Synthetic-key tests also
+the frontend proxy routing and verifies public requests without browser gates,
+while account, staff and game-server authorization remain enforced. Synthetic-key tests also
 verify legacy/2048-bit signatures, portable key paths and the configured JWT keys;
 they do not read the original leaked private keys. A separate Linux smoke test
 boots the complete website with isolated generated configs, exercises signing-key
@@ -146,6 +147,24 @@ setup and checks authorized/unauthorized `/gs/activity` through the real middlew
 pipeline. It does not start the frontend, validator or RCC, or prove that a real
 client can join. Original signing keys remain compromised despite the portable
 loader fix.
+
+# HTTP ACCESS WITHOUT THE LEGACY GATES
+
+The old `ApplicationGuardMiddleware` and global `CsrfMiddleware` have been
+removed. Public requests no longer require a special user agent, an application
+authorization header, a user-agent bypass cookie or the legacy `x-csrf-token`
+handshake. Old `/auth/captcha` links redirect to `/` instead of presenting a
+browser challenge. The retired bypass secret is no longer generated or read;
+extra keys in existing private configs can remain without affecting startup.
+
+Session validation, password checks, staff permissions and the independently
+authenticated game-server/bot/RCC endpoints are **not** removed. Razor forms retain
+their framework antiforgery tokens and any form-specific captcha checks.
+
+Removing the global CSRF check is an intentional security trade-off, not a
+security fix. Cookie-authenticated API writes are no longer protected by that
+middleware. Do not expose this configuration to a public deployment without a
+replacement CSRF/origin protection strategy. CORS alone is not a replacement.
 
 # HOW TO SETUP
 
@@ -181,7 +200,7 @@ docker compose up -d                        # postgres + redis
 `setup.sh` accepts `DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME REDIS BASE_URL
 ARBITER_BASE_URL` as env vars for **new** configs. It does not rewrite existing
 files. A fresh website gets distinct random service, web-authorization, RCC,
-verification and user-agent secrets. The generated service configs receive the
+verification secrets. The generated service configs receive the
 matching website values:
 
 | Service config | Website setting |
@@ -250,7 +269,7 @@ legacy game-server expecting it to supply the missing Linux RCC runtime.
     - `ArbiterBaseUrl` - `http://127.0.0.1:4310/` for the local arbiter, or the URL of the machine running it.
     - `ArbiterAuthorization`, `GameServerAuthorization`, `BotAuthorization` - private secrets, shared with the corresponding service configs (see the table above).
     - `Jwt:Sessions`, `Jwt:Games` - independent persistent secrets of at least 32 characters. Run `python3 scripts/provision_website_secrets.py Roblox/Roblox.Website` from the repo root to provision missing keys without rewriting this config.
-    - `Authorization`, `RccAuthorization`, `VerificationSecret`, `UserAgentBypassSecret` - replace the example values with private secrets for a manual setup.
+    - `RccAuthorization`, `VerificationSecret` - replace the example values with private secrets for a manual setup.
     - `OwnerUserId` - **an array**, e.g. `[ 12 ]`. Put your own user id in it after you register (see step 7).
     - `Directories` - **every value must end with a trailing slash**. Pre-filled in the example: `Public` → `api/public/`, `AdminBundle` → `admin/public/`, `XmlTemplates` → `Roblox/Roblox.Libraries/Templates/`, `JsonData` → `Roblox/Roblox.Libraries/Json/`, `ScriptsData` → `Roblox/Roblox.Libraries/StudioScripts/`. The asset/storage/thumbnail/group-icon folders are your own runtime data dirs - create them.
 

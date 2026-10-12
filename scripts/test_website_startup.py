@@ -18,6 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 WEBSITE = ROOT / "Roblox/Roblox.Website"
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, target):
+        return None
+
+
 def main():
     primary = json.loads((WEBSITE / "appsettings.json").read_text())
     secret = primary["GameServerAuthorization"]
@@ -64,7 +69,25 @@ def main():
                 except urllib.error.HTTPError as error:
                     if error.code != 401:
                         raise RuntimeError(f"The full website returned HTTP {error.code} for an unauthenticated callback") from None
-                print("Full website startup, portable signing-key setup and authenticated /gs routing passed on Linux.")
+                opener = urllib.request.build_opener(NoRedirect())
+                for user_agent in ("", "curl/8.0", "Mozilla/5.0 Chrome/60.0"):
+                    account = urllib.request.Request(f"http://127.0.0.1:{port}/apisite/users/v1/users/authenticated", headers={"User-Agent": user_agent})
+                    try:
+                        opener.open(account, timeout=3).close()
+                        raise RuntimeError("An anonymous request obtained authenticated account details")
+                    except urllib.error.HTTPError as error:
+                        if error.code != 401:
+                            raise RuntimeError(f"An anonymous account request returned HTTP {error.code} instead of 401") from None
+                old_captcha = urllib.request.Request(f"http://127.0.0.1:{port}/auth/captcha", headers={"User-Agent": "curl/8.0"})
+                try:
+                    opener.open(old_captcha, timeout=3).close()
+                    raise RuntimeError("The retired browser captcha route did not redirect")
+                except urllib.error.HTTPError as error:
+                    if error.code != 302 or error.headers.get("Location") != "/":
+                        raise RuntimeError("The retired browser captcha route did not redirect to the site") from None
+                    if error.headers.get("Set-Cookie"):
+                        raise RuntimeError("The retired browser captcha still issued a bypass cookie") from None
+                print("Full website startup, signing setup, public routing without browser gates and retained account/game-server authorization passed on Linux.")
             except Exception:
                 # Never print generated credentials while diagnosing startup errors.
                 text = log_path.read_text()
