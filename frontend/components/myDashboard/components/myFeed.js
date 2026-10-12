@@ -54,7 +54,8 @@ li.list-item {
 const MyFeed = props => {
   const [height, setHeight] = useState('auto');
   // TODO: would a flag be better? I guess automatically guessing is more convenient...
-  const shouldProxyRequest = getBaseUrl().startsWith(window.location.protocol + '//' + window.location.hostname) === false;
+  // Hostnames alone are not origins: local frontend/backend ports differ too.
+  const shouldProxyRequest = new URL(getBaseUrl(), window.location.href).origin !== window.location.origin;
   const feedFrameUrl = shouldProxyRequest ? (getUrlWithProxy(getBaseUrl() + '/Feeds/GetUserFeed')) : getBaseUrl() + '/Feeds/GetUserFeed';
 
   return <div>
