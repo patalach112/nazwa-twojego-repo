@@ -179,18 +179,19 @@ class LuaContractTest(unittest.TestCase):
             for name, wanted in expected.items():
                 self.assertEqual(values[name], wanted, f'{path} passes {name}')
 
-    def test_the_avatar_script_follows_the_avatar_type(self):
-        r6 = self.service()
-        r15 = self.service(website_kwargs={'rig': 'R15'})
-        self.assertEqual(r6.routes['/player/thumbnail'](r6, {'userId': 3})[0], 'Avatar')
-        self.assertEqual(r15.routes['/player/thumbnail'](r15, {'userId': 3})[0], 'Avatar_R15_Action')
-        # Both orders come from the scripts themselves: Avatar.lua takes the appearance
-        # URL first, the R15 script takes the base URL first.
-        for service in (r6, r15):
+    def test_the_avatar_route_uses_the_script_that_covers_both_rigs(self):
+        # The build's R6-only Avatar.lua sets GraphicsMode and fetches the appearance
+        # document through HttpService, which RCC refuses for a host that is not compiled
+        # into its binary; the original stack's own render request asked for
+        # Avatar_R15_Action for every avatar, and that script says it covers R6 as well.
+        for service in (self.service(), self.service(website_kwargs={'rig': 'R15'})):
             script, arguments = service.routes['/player/thumbnail'](service, {'userId': 3})
-            names = declared_arguments(script)
-            self.assertEqual(names, list(service.avatar_argument_order[script]))
-            self.assertEqual(len(arguments), len(names))
+            self.assertEqual(script, 'Avatar_R15_Action')
+            # The order and the count are the script's own declared ones, read from the
+            # shipped file - not from a copy of the header that lives in this repository.
+            declared = declared_arguments(script)
+            self.assertEqual(declared, list(service.avatar_argument_order))
+            self.assertEqual(len(arguments), len(declared))
 
     def test_the_closeup_zoom_slice_matches_this_projects_own_template(self):
         template = json.loads((ROOT / 'game-renderer/scripts/Closeup.json').read_text())
@@ -220,10 +221,13 @@ class LuaContractTest(unittest.TestCase):
                 with self.assertRaises(renderer.RenderError, msg=f'{path} accepted {payload}'):
                     service.routes[path](service, payload)
 
-    def test_an_unreachable_appearance_is_a_failure_not_an_image(self):
+    def test_the_website_does_not_have_to_answer_for_an_avatar_argument_list(self):
+        # The build's own avatar script fetches the appearance document inside RCC, so a
+        # website that is slow or down must not stand between the request and the render.
         service = self.service(website_kwargs={'error': 'the website did not answer'})
-        with self.assertRaises(renderer.RenderError):
-            service.routes['/player/thumbnail'](service, {'userId': 3})
+        script, arguments = service.routes['/player/thumbnail'](service, {'userId': 3})
+        self.assertEqual(script, 'Avatar_R15_Action')
+        self.assertIn('/v1.1/avatar-fetch?userId=3', arguments[1])
 
     def test_unimplemented_endpoints_name_what_is_missing(self):
         service = self.service()
@@ -256,40 +260,6 @@ class LuaContractTest(unittest.TestCase):
         self.assertTrue(listed)
         missing = [name for name in listed if not (SCRIPTS / f'{name}.lua').is_file()]
         self.assertEqual([], missing, 'the entrypoint would refuse to start for these')
-
-
-class AppearanceTest(unittest.TestCase):
-    """The renderer fetches the appearance document; it never builds one."""
-
-    def serve(self, body, status=200):
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
-                payload = body.encode()
-                self.send_response(status)
-                self.send_header('Content-Type', 'application/json')
-                self.send_header('Content-Length', str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-
-            def log_message(self, *arguments):
-                pass
-
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        return f'http://127.0.0.1:{server.server_address[1]}'
-
-    def test_the_document_is_read_from_the_configured_url(self):
-        base = self.serve(json.dumps({'resolvedAvatarType': 'R15', 'bodyColors': {}}))
-        client = renderer.WebsiteClient(base_url=base)
-        self.assertEqual(client.appearance(3)['resolvedAvatarType'], 'R15')
-
-    def test_an_unreadable_document_is_a_failure_not_an_empty_avatar(self):
-        base = self.serve('not json')
-        client = renderer.WebsiteClient(base_url=base)
-        with self.assertRaises(renderer.RenderError):
-            client.appearance(3)
 
 
 class RccReplyTest(unittest.TestCase):
@@ -941,10 +911,10 @@ class RendererAssetBaseTest(unittest.TestCase):
         self.assertEqual(service.appearance_url(3),
                          'http://www.silrev.biz/v1.1/avatar-fetch?userId=3')
         avatar_script, avatar_arguments = service.arguments_avatar({'userId': 3})
-        # Avatar.lua (R6) declares characterAppearanceUrl, baseUrl, fileExtension, x, y.
-        self.assertEqual(avatar_script, 'Avatar')
-        self.assertEqual(avatar_arguments[0], 'http://www.silrev.biz/v1.1/avatar-fetch?userId=3')
-        self.assertEqual(avatar_arguments[1], 'http://www.silrev.biz')
+        # Avatar_R15_Action.lua declares baseUrl, characterAppearanceUrl, fileExtension, x, y.
+        self.assertEqual(avatar_script, 'Avatar_R15_Action')
+        self.assertEqual(avatar_arguments[0], 'http://www.silrev.biz')
+        self.assertEqual(avatar_arguments[1], 'http://www.silrev.biz/v1.1/avatar-fetch?userId=3')
         self.assertEqual(service.arguments_headshot({'userId': 3})[1][0], 'http://www.silrev.biz')
 
     def test_without_the_override_rcc_gets_the_website_service(self):

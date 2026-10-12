@@ -56,17 +56,24 @@ No Roblox-authored script is modified, replaced or installed by this repository.
 | `POST /catalog/model` | `assetId` | `Model.lua` | asset URL, `PNG`, 420, 420, base URL |
 | `POST /catalog/hat` | `assetId` | `Hat.lua` | asset URL, `PNG`, 420, 420, base URL |
 | `POST /catalog/mesh` | `assetId` | `Mesh.lua` | asset URL, `PNG`, 420, 420, base URL |
-| `POST /player/thumbnail` | `userId` | `Avatar.lua` (R6) / `Avatar_R15_Action.lua` (R15) | base URL and appearance URL, in that script's own order, `PNG`, 420, 420 |
+| `POST /player/thumbnail` | `userId` | `Avatar_R15_Action.lua` | base URL, appearance URL, `PNG`, 420, 420 |
 | `POST /player/headshot` | `userId` | `Closeup.lua` | base URL, appearance URL, `PNG`, 420, 420, `true`, 40, 60, 0, 0 |
 | `GET /healthz` | - | - | RCC version, how long ago RCC last answered, whether a render is in progress, and the warm-up report |
 
 The closeup zooms are the values this repository's own `game-renderer/scripts/Closeup.json`
-recorded; `Avatar.lua` and `Avatar_R15_Action.lua` disagree about the first two
-arguments (the shipped files are the authority and the renderer follows each one).
+recorded.
+
+The avatar route asks for `Avatar_R15_Action.lua`, the build's script that covers both
+rigs ("For R6, this generates the normal with/without gear pose"), which is the script the
+original stack's own render request used for every avatar
+(`Roblox/Roblox.Rendering/internalscripts/NewRenderJSON/Avatar.txt`). The R6-only
+`Avatar.lua` is not used: it sets `ThumbnailGenerator.GraphicsMode` and fetches the
+appearance document through `HttpService`, which RCC refuses for any host that is not
+compiled into its binary (`Trust check failed`) - a fetch a thumbnail does not need.
 
 Avatar and headshot renders hand RCC the account's appearance document at
 `<WEBSITE_BASE_URL>/v1.1/avatar-fetch?userId=`, which is the same document the game
-server uses; RCC's own scripts then load the character. That path is *attempted*, not
+server uses; RCC's own script then loads the character. That path is *attempted*, not
 claimed: the integration test reports what a real call returned.
 
 Asset URLs are built from configured values only
@@ -104,8 +111,8 @@ RCC --https--> www.silrev.biz:5000 (compose network alias, renderer container)
   renderer refuses to start. A name that resolves to the real internet host therefore
   stops the stack instead of letting RCC render a foreign asset;
 * `RENDERER_ASSET_BASE_URL` is only used for the URLs RCC fetches. The renderer's own
-  calls (the appearance document it reads to pick the avatar script) keep using
-  `WEBSITE_BASE_URL`, which the same container always reaches.
+  calls to the website keep using `WEBSITE_BASE_URL`, which the same container always
+  reaches: the avatar route needs no round trip to build a render request.
 
 ## Environment
 
@@ -114,7 +121,7 @@ RCC --https--> www.silrev.biz:5000 (compose network alias, renderer container)
 | `RENDERER_PORT` | `3521` | listen port inside the container |
 | `RCC_SOAP_URL` | `http://127.0.0.1:64989/` | RCC SOAP endpoint, in this container |
 | `RCC_SOAP_NAMESPACE` | `http://silrev.biz/` | SOAP namespace of this build |
-| `WEBSITE_BASE_URL` | `http://website:5000` | where the renderer's own calls (appearance documents) go |
+| `WEBSITE_BASE_URL` | `http://website:5000` | where the renderer's own calls to the website go |
 | `RENDERER_ASSET_BASE_URL` | `WEBSITE_BASE_URL` | the trusted, https URL RCC is told to fetch assets from; answered by this container |
 | `RENDERER_TLS_DIRECTORY` | `/home/rcc/tls` | where the throwaway authority and server certificate live |
 | `RENDERER_TLS_BUNDLE` | `/home/rcc/tls/cacert.pem` | the CA bundle RCC verifies with: the build's authorities plus the local one |
@@ -155,9 +162,9 @@ RCC --https--> www.silrev.biz:5000 (compose network alias, renderer container)
   answers 502 naming the script, so the thumbnail stays pending instead of white.
 * `scripts/probe_rcc_image.py` asks RCC itself what the shipped script's calls do: one
   job clicks the same asset through the compose service name, through the trusted name as
-  configured, with `http` instead of `https`, without the port, and through
-  `rbxassetid://`, plus the website's static `/img/Audio.png` through the terminator, and
-  reports byte counts (`Image.lua`'s own placeholder is named as such). RCC's own log
+  configured, with `http` instead of `https`, and through `rbxassetid://`, plus the
+  website's static `/img/Audio.png` through the terminator, and reports byte counts
+  (`Image.lua`'s own placeholder is named as such). RCC's own log
   shows where each attempt connected (`Curl Open: <address>|<port>`), which is what named
   the scheme problem. It writes a unique diagnostic
   script under `internalscripts/scripts/` - never next to the shipped thumbnail scripts -

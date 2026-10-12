@@ -207,13 +207,14 @@ def rcc_image_report(asset_id):
         return f"the RCC image probe could not run: {type(error).__name__}: {error}"
 
 
-def renderer_log_lines(pattern, tail=800, keep=16):
+def renderer_log_lines(pattern, tail=800, keep=40, cap=3500):
     """The renderer container's own log lines matching ``pattern``.
 
-    RCC's shipped Avatar.lua prints every step of an avatar render with ``[DEBUG]``, and
-    RCC logs the HTTP and script errors next to those lines, so this is where the reason
-    for a missing avatar render is written. A diagnostic: its own failure is reported, not
-    raised, and it never prints a secret.
+    RCC writes one line per step of a thumbnail job: the timestamp, the level, the job id
+    and the message, and its scripts print their own steps with ``[DEBUG]``. That is where
+    the reason for a job whose reply carried no image is written, so the avatar branch
+    keeps the whole block instead of the last few lines. A diagnostic: its own failure is
+    reported, not raised, and it never prints a secret.
     """
     try:
         result = subprocess.run(["bash", "scripts/local-stack.sh", "logs", "--no-color",
@@ -225,7 +226,7 @@ def renderer_log_lines(pattern, tail=800, keep=16):
     kept = [line.strip() for line in (result.stdout + result.stderr).splitlines() if matcher.search(line)]
     if not kept:
         return f"no line of the renderer log matched {pattern} in its last {tail} lines"
-    return scrub(" | ".join(kept[-keep:])[-1400:])
+    return scrub(" | ".join(kept[-keep:])[-cap:])
 
 
 def job_summary(markdown):
@@ -665,9 +666,11 @@ def main():
                 "what RCC was told to load: " + appearance_summary(backend, owner_id),
                 "the same document through the renderer's own https terminator: "
                 + appearance_via_terminator(owner_id, RENDERER_ASSET_BASE),
-                "RCC's own steps for that avatar job: " + renderer_log_lines(r"\[DEBUG\]|Avatar"),
-                "RCC's errors around that job: "
-                + renderer_log_lines(r"Error|error|Warning|failed|Unable", keep=10),
+                # Every line RCC wrote for a thumbnail job carries ",Thumbnail,"; the
+                # scripts add their own [DEBUG] steps and RCC prefixes its warnings and
+                # errors. Keeping the whole block is what makes a nil click readable.
+                "RCC's own lines for that avatar job: "
+                + renderer_log_lines(r"\[DEBUG\]|,Thumbnail,|Warning|Error|Avatar", tail=2000),
             ])
             notice(f"the avatar render is not working yet and stayed pending: "
                    f"HTTP {status} - {body.get('message')}\n{diagnosis}")

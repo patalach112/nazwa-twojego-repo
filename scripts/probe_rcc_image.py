@@ -12,9 +12,9 @@ returns RCC's answer for every URL that script could fetch.
 RCC 2020 accepts only the host names compiled into its binary ("%s: Trust check failed"
 for anything else) and upgrades asset URLs to https, which is why the renderer hands RCC
 the trusted name of the local website over TLS instead of the compose service name. The
-probe therefore clicks the same asset through both names, with and without the port, and
-through ``rbxassetid://`` - one job answers which of those RCC accepts and whether the
-fetch itself then succeeds. A result whose
+probe therefore clicks the same asset through that trusted name, over http instead of
+https, through the compose service name, and through ``rbxassetid://`` - one job answers
+which of those RCC accepts and whether the fetch itself then succeeds. A result whose
 length equals the placeholder literal in ``Image.lua`` (1239 bytes of base64) is the
 script's own fallback, not a picture, so the probe says so.
 

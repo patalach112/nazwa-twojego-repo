@@ -270,21 +270,16 @@ class RccClient:
 
 
 class WebsiteClient:
-    """Reads the account's appearance document from the real website."""
+    """The website service the renderer runs next to.
 
-    def __init__(self, base_url=None, timeout=None):
+    The renderer builds every URL it hands RCC from configured values, and the URLs RCC
+    fetches come from the asset base URL instead - see the module docstring. Nothing the
+    renderer does for a render request needs this service to answer: the build's own
+    avatar script fetches the appearance document inside RCC.
+    """
+
+    def __init__(self, base_url=None):
         self.base_url = (base_url or os.environ.get('WEBSITE_BASE_URL', DEFAULT_WEBSITE_URL)).rstrip('/')
-        self.timeout = timeout or int(os.environ.get('RENDERER_ASSET_FETCH_TIMEOUT', '20'))
-
-    def appearance(self, user_id):
-        url = f'{self.base_url}{APPEARANCE_PATH}?userId={int(user_id)}'
-        request = urllib.request.Request(url, headers={'Accept': 'application/json'})
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        try:
-            with opener.open(request, timeout=self.timeout) as response:
-                return json.loads(response.read())
-        except (urllib.error.URLError, OSError, ValueError) as error:
-            raise RenderError(f'the appearance for user {user_id} could not be read: {error}') from None
 
 
 class Renderer:
@@ -339,30 +334,25 @@ class Renderer:
         """The appearance document RCC's avatar scripts fetch themselves."""
         return f'{self.asset_base_url}{APPEARANCE_PATH}?userId={int(user_id)}'
 
-    def avatar_script(self, user_id):
-        """Avatar.lua for R6, Avatar_R15_Action.lua for R15 accounts.
-
-        game-renderer/scripts/Avatar.json asks for Avatar_R15_Action; the R6 script
-        is the same contract without the R15 pose handling.
-        """
-        rig = str(self.website.appearance(user_id).get('resolvedAvatarType', 'R6')).upper()
-        return 'Avatar_R15_Action' if rig == 'R15' else 'Avatar'
-
-    # The shipped scripts disagree about the first two arguments: Avatar.lua takes the
-    # appearance URL first, Avatar_R15_Action.lua takes the base URL first. Both orders
-    # come from the scripts themselves and are checked by the contract test.
-    avatar_argument_order = {
-        'Avatar': ('characterAppearanceUrl', 'baseUrl', 'fileExtension', 'x', 'y'),
-        'Avatar_R15_Action': ('baseUrl', 'characterAppearanceUrl', 'fileExtension', 'x', 'y'),
-    }
+    # The build ships two avatar scripts, and this stack asks for the one that covers both
+    # rigs: Avatar_R15_Action.lua says so itself ("For R6, this generates the normal
+    # with/without gear pose"), the original stack's own render request
+    # (Roblox/Roblox.Rendering/internalscripts/NewRenderJSON/Avatar.txt) used it for every
+    # avatar, and Avatar.lua - the R6-only script - does two extra things a thumbnail does
+    # not need: it sets ThumbnailGenerator.GraphicsMode and it fetches the appearance
+    # document through HttpService, which RCC refuses for any host that is not compiled
+    # into its binary ("Trust check failed", see the probe in scripts/probe_rcc_image.py).
+    AVATAR_SCRIPT = 'Avatar_R15_Action'
+    # Avatar_R15_Action.lua declares `baseUrl, characterAppearanceUrl, fileExtension, x, y`;
+    # the contract test reads that header from the shipped script.
+    avatar_argument_order = ('baseUrl', 'characterAppearanceUrl', 'fileExtension', 'x', 'y')
 
     def arguments_avatar(self, payload):
-        """Avatar.lua / Avatar_R15_Action.lua, each in its own declared order."""
+        """Avatar_R15_Action.lua, in the order its own header declares."""
         user_id = self.user_id(payload)
-        script = self.avatar_script(user_id)
         values = {'baseUrl': self.asset_base_url, 'characterAppearanceUrl': self.appearance_url(user_id),
                   'fileExtension': 'PNG', 'x': 420, 'y': 420}
-        return script, [values[name] for name in self.avatar_argument_order[script]]
+        return self.AVATAR_SCRIPT, [values[name] for name in self.avatar_argument_order]
 
     def arguments_headshot(self, payload):
         """Closeup.lua: baseUrl, characterAppearanceUrl, fileExtension, x, y,
