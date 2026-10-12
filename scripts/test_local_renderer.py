@@ -15,9 +15,12 @@ profile:
    texture, stored in the configured thumbnail directory and served from its URL,
 3. an uploaded model asset gets its own, different 3D render, stored as a separate file
    and recorded as awaiting staff approval in the database (asserted, not hidden),
-4. with the renderer stopped the upload and delivery still work and nothing claims a
+4. an account's own avatar comes back from RCC's shipped Avatar_R15_Action.lua as a
+   420x420 image of a real character, not a blank or a fallback: the render has to carry
+   many distinct colours, which a solid or placeholder image cannot,
+5. with the renderer stopped the upload and delivery still work and nothing claims a
    finished thumbnail,
-5. a caller without the Authorization value, and an endpoint the renderer does not
+6. a caller without the Authorization value, and an endpoint the renderer does not
    implement, are refused instead of returning a picture.
 """
 
@@ -644,20 +647,36 @@ def main():
         notice(f"model asset {model_id} rendered its own 3D thumbnail, stored as {key} "
                f"(awaiting approval {moderation}) and served at {model_entry['imageUrl']}")
 
-        # 3b. The avatar path is attempted and reported, because RCC's own Avatar.lua
-        #     loads a real character through the website. It is not claimed to work
-        #     unless it returns a real image, and it never returns a substitute.
+        # 3b. The avatar path: RCC's own Avatar_R15_Action.lua loads the account's
+        #     character inside RCC and clicks it. A 200 alone is not success, so the
+        #     render has to be a 420x420 PNG with the colours of a shaded character -
+        #     a blank, a solid background or one of the fallbacks the shipped scripts
+        #     carry has far fewer. It never returns a substitute.
         status, body = renderer_post("/player/thumbnail", {"userId": owner_id},
                                      authorization=authorization, timeout=RENDER_TIMEOUT)
         if status == 200 and body.get("success"):
             avatar = base64.b64decode(body["data"])
-            details = png_constants(avatar)
-            if details is None:
+            if png_constants(avatar) is None:
                 fail("the avatar render did not return a decodable PNG")
-            if details[1] < THUMBNAIL_EDGE or details[2] < THUMBNAIL_EDGE:
-                fail(f"the avatar render came back as {details[1]}x{details[2]}, which is a placeholder")
-            notice(f"RCC's own Avatar script rendered user {owner_id} through the website "
-                   f"({details[1]}x{details[2]}, {len(avatar)} bytes)")
+            width, height, rows = read_png(avatar)
+            if (width, height) != (THUMBNAIL_EDGE, THUMBNAIL_EDGE):
+                fail(f"the avatar render came back as {width}x{height}, not "
+                     f"{THUMBNAIL_EDGE}x{THUMBNAIL_EDGE}")
+            # A blank background, a solid colour or an empty DataModel all produce a
+            # frame whose every sampled pixel is the same: what makes this a character is
+            # that a good part of the frame is *not* the most common colour.
+            shades = [colour_at(rows, width, x, y)
+                      for x in range(0, width, 20) for y in range(0, height, 20)]
+            dominant = max(set(shades), key=shades.count)
+            differing = sum(1 for shade in shades if shade != dominant)
+            if differing < len(shades) // 10:
+                fail(f"only {differing} of {len(shades)} sampled pixels differ from the most "
+                     f"common colour {dominant}: the avatar render is a background, not a "
+                     "character")
+            notice(f"RCC's own Avatar_R15_Action script rendered user {owner_id} through the "
+                   f"website as a {width}x{height} character ({len(avatar)} bytes; "
+                   f"{len(set(shades))} distinct sampled colours, {differing}/{len(shades)} "
+                   f"pixels away from the most common one)")
         elif status in (501, 502):
             # One notice, not five: GitHub publishes only the first ten notices of a
             # step, and this one is emitted near the end. The same text goes into the

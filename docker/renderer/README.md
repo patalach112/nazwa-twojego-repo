@@ -72,9 +72,12 @@ appearance document through `HttpService`, which RCC refuses for any host that i
 compiled into its binary (`Trust check failed`) - a fetch a thumbnail does not need.
 
 Avatar and headshot renders hand RCC the account's appearance document at
-`<WEBSITE_BASE_URL>/v1.1/avatar-fetch?userId=`, which is the same document the game
-server uses; RCC's own script then loads the character. That path is *attempted*, not
-claimed: the integration test reports what a real call returned.
+`<RENDERER_ASSET_BASE_URL>/v1.1/avatar-fetch?userId=`, which is the same document the game
+server uses; RCC's own script then loads the character. The avatar render is verified, not
+assumed: `scripts/test_local_renderer.py` requires a 420x420 image carrying the colours of
+a shaded character, so a blank, a solid background or one of the fallbacks the shipped
+scripts carry fails the check. The headshot route is implemented and unverified - no CI
+check claims it yet.
 
 Asset URLs are built from configured values only
 (`<RENDERER_ASSET_BASE_URL>/asset/?id=<assetId>`), never from the request body, so the
@@ -195,7 +198,7 @@ RCC --https--> www.silrev.biz:5000 (compose network alias, renderer container)
 
 `scripts/test_local_renderer.py` covers image assets (two different textures, checked
 pixel by pixel) and model assets through the real website, and it reports the result of
-a real avatar render attempt instead of assuming one. The hat, mesh, headshot and
+the avatar render RCC actually produced instead of assuming one. The hat, mesh, headshot and
 clothing routes are implemented (or refused with a reason) but **not covered by that
 test**, so they are unproven. Place thumbnails, animations, packages, body parts and
 the `-thumbnail3d` objects are unimplemented on purpose. No client-visible claim is made
