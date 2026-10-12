@@ -66,8 +66,9 @@ shared secret. POST requests require `Content-Type: application/json`.
   exits. The arbiter shuts down tracked children on SIGINT/SIGTERM.
 
 RCC eviction and real game startup still need a test on a compatible host. The
-website's missing `/gs/*` handlers also prevent heartbeats and player reports
-from reaching the database; this service does not add those handlers.
+website now implements authenticated `/gs/*` heartbeats, player reports and
+shutdown callbacks, with database-backed regression tests. Those handlers do
+not supply the missing place bootstrap or client proxy.
 
 ## Tests
 

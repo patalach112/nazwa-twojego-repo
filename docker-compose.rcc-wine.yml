@@ -1,0 +1,26 @@
+# Standalone Wine experiment: docker compose -f docker-compose.rcc-wine.yml up --build
+# This starts SOAP only. No place bootstrap, UDP listener or game proxy is supplied.
+services:
+  rcc-wine:
+    build: ./docker/rcc-wine
+    init: false # The image already uses tini with process-group signal forwarding.
+    environment:
+      RCC_BASE_URL: ${RCC_BASE_URL:-http://host.docker.internal:5000}
+      RCC_PORT: "64989"
+      RCC_EXE: ${RCC_EXE:-RCCService.exe}
+    volumes:
+      - ${RCC_DIRECTORY:-./RCCService}:/opt/rcc:ro
+    ports:
+      - "127.0.0.1:${RCC_SOAP_PORT:-64989}:64989"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /home/rcc:rw,nosuid,nodev,uid=1000,gid=1000,size=2g
+      - /tmp:rw,nosuid,nodev,size=256m
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 512
+    stop_grace_period: 15s

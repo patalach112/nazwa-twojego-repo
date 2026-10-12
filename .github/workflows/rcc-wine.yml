@@ -1,0 +1,48 @@
+name: RCC Wine compatibility experiment
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - docker/rcc-wine/**
+      - docker-compose.rcc-wine.yml
+      - scripts/test_rcc_wine.py
+      - .github/workflows/rcc-wine.yml
+  push:
+    branches: [master]
+    paths:
+      - docker/rcc-wine/**
+      - docker-compose.rcc-wine.yml
+      - scripts/test_rcc_wine.py
+      - .github/workflows/rcc-wine.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check launcher syntax
+        run: |
+          sh -n docker/rcc-wine/entrypoint.sh docker/rcc-wine/run-wine.sh
+          python3 -m py_compile docker/rcc-wine/healthcheck.py docker/rcc-wine/lua_probe.py scripts/test_rcc_wine.py
+      - name: Build the 32-bit Wine runtime, not a pretend Linux RCC image
+        run: docker build --tag rcc-wine-test docker/rcc-wine
+      - name: Test the actual Windows binaries, SOAP, Lua and shutdown
+        # Optional investigation: a green workflow is not a compatibility claim.
+        # Per-build failures are reported explicitly in annotations and the summary.
+        continue-on-error: true
+        env:
+          RCC_WINE_RESULTS: ${{ runner.temp }}/rcc-wine-results.json
+        run: python3 scripts/test_rcc_wine.py
+      - name: Retain the compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rcc-wine-compatibility
+          path: ${{ runner.temp }}/rcc-wine-results.json
+          if-no-files-found: warn

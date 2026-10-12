@@ -73,8 +73,11 @@ getting a green build does **not** make this source a working revival.
 1. **There is no Linux RCC binary.** `RCCService/RCCService.exe` is Windows-only.
    `game-server/docker/rccservice.dockerfile` copies a `rcc-docker/` directory
    that is not in the repo. On Debian, Docker alone cannot supply that missing
-   runtime; a compatible, legally obtained Linux RCC build or a Windows host
-   is still needed. Wine has not been validated here.
+   runtime. A new [experimental Wine image](docker/rcc-wine/README.md) can test
+   the bundled Windows executables on an amd64 Linux Docker host. Read the
+   per-build SOAP/Lua compatibility report; merely building the image does not
+   prove it works. A compatible Linux RCC build or Windows host remains an
+   alternative. Real place startup and client joins are still unverified.
 2. **The arbiter needs a real game launcher.** This repo now includes
    `game-arbiter/`, replacing the omission described in `Notes.md`. It manages
    processes and the website's start/kill/eviction contract, but the example
