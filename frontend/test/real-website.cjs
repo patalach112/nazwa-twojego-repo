@@ -141,6 +141,8 @@ async function main() {
     await page.getByPlaceholder('Password', {exact: true}).fill('wrong-real-test-password');
     await page.getByRole('button', {name: 'Login', exact: true}).click();
     await page.getByText('Incorrect username or password. Please try again', {exact: true}).waitFor();
+    assert.equal(await page.getByPlaceholder('Username', {exact: true}).inputValue(), username,
+      'An invalid password must not discard the entered username');
     assert.equal((await context.request.get(frontend + proxyUrl(accountPath), {maxRedirects: 0})).status(), 401);
     await snapshot(page, 'login');
     // Respect the real five-second per-IP login cooldown; do not disable it.

@@ -37,7 +37,7 @@
                     <p class="text-danger">@Model.errorMessage</p>
                 }
                 <form method="post">
-                    <input disabled="@Model.signupDisabled" type="text" placeholder="Username" aria-label="Username" autocomplete="username" maxlength="20" required name="username" class="form-control mb-1"/>
+                    <input disabled="@Model.signupDisabled" type="text" placeholder="Username" aria-label="Username" autocomplete="username" maxlength="20" required name="username" value="@Model.username" class="form-control mb-1"/>
                     <input disabled="@Model.signupDisabled" type="password" placeholder="Password" aria-label="Password" autocomplete="new-password" required name="password" class="form-control mb-1"/>
                     @Html.AntiForgeryToken()
                     <input disabled="@Model.signupDisabled" class="btn btn-primary mt-2" type="submit" value="Sign Up" id="signup-submit"/>
