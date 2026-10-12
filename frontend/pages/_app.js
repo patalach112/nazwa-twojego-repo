@@ -5,6 +5,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import '../styles/roblox/icons.css';
 import Navbar from '../components/navbar';
 import React, {useEffect} from 'react';
+import App from 'next/app';
 import Head from 'next/head';
 import Footer from '../components/footer';
 import NextNProgress from "nextjs-progressbar";
@@ -136,5 +137,9 @@ function RobloxApp({Component, pageProps}) {
         </AuthenticationStore.Provider>
     </div>
 }
+
+// Runtime configuration is mounted after the image build. Automatic static
+// optimization would keep placeholder URLs/flags in otherwise static pages.
+RobloxApp.getInitialProps = async context => App.getInitialProps(context);
 
 export default RobloxApp;

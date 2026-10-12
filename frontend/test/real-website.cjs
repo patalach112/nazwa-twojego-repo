@@ -97,6 +97,8 @@ async function main() {
       const response = await page.goto(origin + '/', {waitUntil: 'domcontentloaded'});
       assert.equal(response.status(), 200, label + ' root is not reachable');
       await page.getByRole('heading', {name: 'Welcome to Marine', exact: true}).waitFor();
+      assert.equal(await page.evaluate(() => window.__NEXT_DATA__.runtimeConfig.backend.baseUrl), frontend,
+        'The real deployment URL must come from the mounted runtime config');
       await page.locator('nav').getByRole('link', {name: 'Login', exact: true}).waitFor();
       await snapshot(page, label + '-anonymous');
     }
