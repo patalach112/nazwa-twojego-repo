@@ -66,7 +66,7 @@ const MyFeed = props => {
       const doc = current.contentWindow.document;
       const body = doc.body;
       const font = doc.createElement('link');
-      font.setAttribute('href', 'https://fonts.googleapis.com/css2?family=Source+Sans+Pro:ital,wght@0,200;0,300;0,400;0,600;0,700;0,900;1,200;1,300;1,400;1,600;1,700;1,900&amp;display=swap');
+      font.setAttribute('href', '/fonts/source-sans-pro.css');
       font.setAttribute('rel', 'stylesheet');
       doc.body.appendChild(font);
       const styles = doc.createElement('style');
