@@ -66,10 +66,26 @@ def stack(*arguments):
     return (result.stdout + result.stderr).strip()
 
 
+def service_log(service, keywords=None, tail=TAIL, keep=26):
+    """One service's log, optionally reduced to the lines that explain a render.
+
+    Interleaved logs push the interesting lines out of a fixed tail, so the renderer and
+    the website are reported apart, and each one's render-relevant lines are kept.
+    """
+    text = redact(stack("logs", "--no-color", "--tail", str(tail), service), secrets())
+    if keywords is None:
+        return "\n".join(text.splitlines()[-45:])
+    lines = [line for line in text.splitlines()
+             if any(word in line.lower() for word in keywords)]
+    return "\n".join(lines[-keep:]) or f"no line matching {', '.join(keywords)} in the last {tail} lines"
+
+
 def main():
     values = secrets()
     sections = [("Renderer stack state", stack("ps", "-a")),
-                ("Renderer, RCC and website logs", stack("logs", "--no-color", "--tail", str(TAIL), *SERVICES)),
+                ("Renderer log", service_log("renderer")),
+                ("Renderer render job lines", service_log("renderer", ("job", "thumbnail", "executing", "error", "warn"))),
+                ("Website render lines", service_log("website", ("render", "thumbnail", "error", "fail"))),
                 ("Renderer test log", read(os.environ.get("RENDERER_TEST_LOG", "/dev/null")))]
     summary = Path(os.environ.get("GITHUB_STEP_SUMMARY", os.devnull))
     for title, text in sections:

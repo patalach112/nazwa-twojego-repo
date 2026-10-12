@@ -38,6 +38,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 # The HTTP helpers are shared with the Stage 1 check on purpose: one client, one
 # set of assertions about cookies, redirects and secret redaction.
+# `psql` is the strict helper: it fails on an empty result, which is exactly what the
+# stopped-renderer case asserts. Waiting for a thumbnail row uses thumbnail_rows instead,
+# because an empty result there means "not yet" rather than "wrong".
 from test_asset_import import (  # noqa: E402
     Client, collect_secrets, expect_status, fail, make_png, notice, psql, register,
     run_stack, trace, wait_ready, write_config, write_config_bytes,
@@ -157,7 +160,35 @@ def thumbnail_state(client, backend, asset_id):
     return json.loads(body)["data"][0]
 
 
-def wait_for_thumbnail(client, backend, database, asset_id, what, timeout=RENDER_TIMEOUT):
+def thumbnail_rows(database, asset_id):
+    """Stored thumbnail rows, without treating "no row yet" as an error."""
+    output = run_stack("exec", "-T", "postgres", "psql", "--username", "postgres",
+                       "--dbname", database, "--tuples-only", "--no-align", "--command",
+                       "SELECT moderation_status, content_url FROM asset_thumbnail "
+                       f"WHERE asset_id = {asset_id};")
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def renderer_probe(asset_id, authorization):
+    """The renderer's own answer for one asset, used as a failure message.
+
+    This is a diagnostic, never a substitute for the website path: it says whether the
+    renderer itself could produce the picture, which is what separates "the render is
+    broken" from "the website never asked for it or never stored it".
+    """
+    try:
+        status, body = renderer_post_once("/image/image", {"assetId": asset_id},
+                                          authorization=authorization, timeout=RENDER_TIMEOUT)
+    except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as error:
+        return f"the renderer was not reachable ({error})"
+    if status == 200 and body.get("success"):
+        return (f"the renderer rendered it (HTTP 200, {len(base64.b64decode(body['data']))} bytes), "
+                f"so the website did not store the render")
+    return f"the renderer answered HTTP {status}: {body.get('message')}"
+
+
+def wait_for_thumbnail(client, backend, database, asset_id, what, authorization=None,
+                       timeout=RENDER_TIMEOUT):
     """Waits for the render to reach the database, then for the website to serve it.
 
     The database row is the progress signal on purpose: while the thumbnail row is
@@ -166,7 +197,20 @@ def wait_for_thumbnail(client, backend, database, asset_id, what, timeout=RENDER
     render in flight a broken renderer. Returns the API entry, the stored moderation
     status and the stored key.
     """
-    moderation, key = wait_for_thumbnail_row(database, asset_id, what, timeout)
+    deadline = time.monotonic() + timeout
+    rows = []
+    while time.monotonic() < deadline:
+        rows = thumbnail_rows(database, asset_id)
+        if rows:
+            break
+        time.sleep(3)
+    if not rows:
+        fail(f"{what} never got a thumbnail row within {timeout}s: "
+             f"{renderer_probe(asset_id, authorization)}; the website answered "
+             f"{thumbnail_state(client, backend, asset_id)}")
+    if len(rows) != 1:
+        fail(f"{what} must have exactly one thumbnail row, the database has {rows}")
+    moderation, key = rows[0].split("|")
     deadline = time.monotonic() + 30
     last = None
     while time.monotonic() < deadline:
@@ -196,18 +240,6 @@ def fetch_thumbnail(image_url, backend):
     if status != 200 or body == b"" or b"<html" in body[:200].lower():
         fail(f"the thumbnail URL {url} answered HTTP {status} with {len(body)} bytes")
     return url, body
-
-
-def wait_for_thumbnail_row(database, asset_id, what, timeout=RENDER_TIMEOUT):
-    deadline = time.monotonic() + timeout
-    rows = []
-    while time.monotonic() < deadline:
-        rows = psql(database, "SELECT moderation_status, content_url FROM asset_thumbnail "
-                              f"WHERE asset_id = {asset_id};")
-        if rows:
-            return rows[0]
-        time.sleep(3)
-    fail(f"{what} never got a thumbnail row (the render did not finish); database said: {rows}")
 
 
 def thumbnail_file(thumbnails_directory, image_url):  # noqa: D103
@@ -439,7 +471,8 @@ def main():
                                           (200,), f"the {label.lower()} texture import")
             asset_id = int(json.loads(body)["assetId"])
             entry, moderation, key = wait_for_thumbnail(owner, backend, database, asset_id,
-                                                        f"{label.lower()} image asset {asset_id}")
+                                                        f"{label.lower()} image asset {asset_id}",
+                                                        authorization=authorization)
             # A texture render is approved automatically: the catalog would show a
             # pending asset as no picture at all, so the stored status is asserted.
             if moderation != str(APPROVED):
@@ -480,7 +513,8 @@ def main():
                                       (200,), "the model import")
         model_id = int(json.loads(body)["assetId"])
         model_entry, moderation, key = wait_for_thumbnail(owner, backend, database, model_id,
-                                                          f"model asset {model_id}")
+                                                          f"model asset {model_id}",
+                                                          authorization=authorization)
         rows = psql(database, "SELECT moderation_status, content_url FROM asset_thumbnail "
                               f"WHERE asset_id = {model_id};")
         if len(rows) != 1:
