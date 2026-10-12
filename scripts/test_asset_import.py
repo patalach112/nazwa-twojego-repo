@@ -88,10 +88,23 @@ def fail(message):
     raise SystemExit(text)
 
 
+# GitHub publishes at most ten notice annotations per step and silently drops the rest,
+# which would make the last - usually the interesting - notice look like it never
+# happened. Everything past the tenth stays in the log and says so.
+MAX_NOTICE_ANNOTATIONS = 10
+notice_annotations = 0
+
+
 def notice(message):
+    global notice_annotations
     message = scrub(message)
     print("Asset import: " + message, flush=True)
     if os.environ.get("GITHUB_ACTIONS") == "true":
+        if notice_annotations >= MAX_NOTICE_ANNOTATIONS:
+            print(f"Asset import: (notice {notice_annotations + 1} of this step: GitHub "
+                  f"publishes only the first {MAX_NOTICE_ANNOTATIONS} as annotations)", flush=True)
+            return
+        notice_annotations += 1
         print("::notice title=Asset import check::" + message)
 
 

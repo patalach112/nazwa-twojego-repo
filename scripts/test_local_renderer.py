@@ -45,7 +45,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 # because an empty result there means "not yet" rather than "wrong".
 from test_asset_import import (  # noqa: E402
     Client, collect_secrets, expect_status, fail, make_png, notice, psql, register,
-    run_stack, trace, wait_ready, write_config, write_config_bytes,
+    run_stack, scrub, trace, wait_ready, write_config, write_config_bytes,
 )
 import configure_local_docker  # noqa: E402
 from probe_rcc_image import run_probe as rcc_image_probe  # noqa: E402
@@ -225,7 +225,23 @@ def renderer_log_lines(pattern, tail=800, keep=16):
     kept = [line.strip() for line in (result.stdout + result.stderr).splitlines() if matcher.search(line)]
     if not kept:
         return f"no line of the renderer log matched {pattern} in its last {tail} lines"
-    return " | ".join(kept[-keep:])[-1400:]
+    return scrub(" | ".join(kept[-keep:])[-1400:])
+
+
+def job_summary(markdown):
+    """Appends to the job summary, which - unlike annotations - is not capped.
+
+    Raises nothing: a missing or unwritable summary must never be the reason a
+    thumbnail test fails.
+    """
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a") as stream:
+            stream.write(markdown)
+    except OSError as error:
+        print(f"Asset import: the job summary could not be written: {error}", flush=True)
 
 
 def appearance_via_terminator(user_id, asset_base):
@@ -251,7 +267,8 @@ def appearance_via_terminator(user_id, asset_base):
                                 text=True, timeout=180)
     except (OSError, subprocess.SubprocessError) as error:
         return f"could not be checked: {type(error).__name__}: {error}"
-    return (result.stdout + result.stderr).strip().replace("\n", " | ")[-400:] or "the check printed nothing"
+    return scrub((result.stdout + result.stderr).strip().replace("\n", " | ")[-400:]
+                 or "the check printed nothing")
 
 
 def appearance_summary(backend, user_id):
@@ -265,10 +282,11 @@ def appearance_summary(backend, user_id):
         return "the appearance document is not JSON: " + body[:120].decode("utf-8", "replace")
     assets = document.get("assetAndAssetTypeIds") or []
     lists = {key: len(value) for key, value in document.items() if isinstance(value, list)}
-    return (f"the appearance document names {sorted(document)[:12]}, resolvedAvatarType="
-            f"{document.get('resolvedAvatarType')!r}, {len(assets)} asset ids "
-            f"{[entry.get('assetId') for entry in assets][:8]}, list lengths {lists}, "
-            f"bodyColors {sorted(document.get('bodyColors') or {})[:9]}")
+    return scrub(
+        f"the appearance document names {sorted(document)[:12]}, resolvedAvatarType="
+        f"{document.get('resolvedAvatarType')!r}, {len(assets)} asset ids "
+        f"{[entry.get('assetId') for entry in assets][:8]}, list lengths {lists}, "
+        f"bodyColors {sorted(document.get('bodyColors') or {})[:9]}")
 
 
 def wait_for_thumbnail(client, backend, database, asset_id, what, authorization=None,
@@ -549,6 +567,7 @@ def main():
         #    different renders, each showing its own colour. That is what separates a
         #    real render from a fixed fallback image.
         rendered = {}
+        rendered_descriptions = []
         for label, colour, filename in (("Red", (220, 40, 40), "renderer-red.png"),
                                         ("Green", (20, 200, 40), "renderer-green.png")):
             headers, body = expect_status(upload_asset(owner, backend, "Render" + label, filename,
@@ -582,14 +601,17 @@ def main():
                      f"({matching}/{len(samples)}): {samples}; RCC said: "
                      f"{rcc_image_report(asset_id)}")
             rendered[label] = (path.read_bytes(), entry["imageUrl"], samples[0])
-            notice(f"{label.lower()} texture {asset_id} rendered as {key}.png, served at {served_url}, "
-                   f"showing {samples[0]}")
+            # Reported as one notice further down: GitHub publishes only the first ten
+            # notices of a step, and the end of the run is the interesting part.
+            rendered_descriptions.append(f"{label.lower()} asset {asset_id} rendered as {key}.png "
+                                         f"served at {served_url}, showing {samples[0]}")
         if rendered["Red"][0] == rendered["Green"][0]:
             fail("two different uploaded textures produced the same thumbnail file")
         if is_colourish(rendered["Red"][2], (20, 200, 40)) or is_colourish(rendered["Green"][2], (220, 40, 40)):
             fail(f"the renders are swapped or fixed: red {rendered['Red'][2]}, green {rendered['Green'][2]}")
         path = thumbnail_file(thumbnails_directory, rendered["Red"][1])
-        notice("uploaded images render as real 420x420 textures, served from their own URLs")
+        notice("uploaded images render as real 420x420 textures, served from their own URLs: "
+               + "; ".join(rendered_descriptions))
 
         # 3. A real model asset: its own, different 3D render. Every thumbnail the
         #    renderer produces is stored as awaiting staff approval - the catalog shows
@@ -636,15 +658,21 @@ def main():
             notice(f"RCC's own Avatar script rendered user {owner_id} through the website "
                    f"({details[1]}x{details[2]}, {len(avatar)} bytes)")
         elif status in (501, 502):
+            # One notice, not five: GitHub publishes only the first ten notices of a
+            # step, and this one is emitted near the end. The same text goes into the
+            # job summary, where nothing is dropped.
+            diagnosis = "\n".join([
+                "what RCC was told to load: " + appearance_summary(backend, owner_id),
+                "the same document through the renderer's own https terminator: "
+                + appearance_via_terminator(owner_id, RENDERER_ASSET_BASE),
+                "RCC's own steps for that avatar job: " + renderer_log_lines(r"\[DEBUG\]|Avatar"),
+                "RCC's errors around that job: "
+                + renderer_log_lines(r"Error|error|Warning|failed|Unable", keep=10),
+            ])
             notice(f"the avatar render is not working yet and stayed pending: "
-                   f"HTTP {status} - {body.get('message')}")
-            notice("what RCC was told to load: " + appearance_summary(backend, owner_id))
-            notice("the same document through the renderer's own https terminator: "
-                   + appearance_via_terminator(owner_id, RENDERER_ASSET_BASE))
-            notice("RCC's own steps for that avatar job: "
-                   + renderer_log_lines(r"\[DEBUG\]|Avatar"))
-            notice("RCC's errors around that job: "
-                   + renderer_log_lines(r"Error|error|Warning|failed|Unable", keep=10))
+                   f"HTTP {status} - {body.get('message')}\n{diagnosis}")
+            job_summary(f"### The avatar render stayed pending\n\n```\n"
+                        f"HTTP {status} - {body.get('message')}\n{diagnosis}\n```\n")
         else:
             fail(f"the avatar render returned HTTP {status}: {body}")
 

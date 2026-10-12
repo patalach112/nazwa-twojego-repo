@@ -13,7 +13,9 @@ check three things that have to stay true:
 """
 
 import base64
+import contextlib
 import http.client
+import io
 import http.server
 import importlib.util
 import json
@@ -1059,6 +1061,70 @@ class AssetTlsTest(unittest.TestCase):
         self.addCleanup(upstream.shutdown)
         self.addCleanup(upstream.server_close)
         return f'127.0.0.1:{upstream.server_address[1]}'
+
+
+class NoticeBudgetTest(unittest.TestCase):
+    """The renderer check reports through GitHub notices, and GitHub drops the ones past ten.
+
+    The lines that explain an avatar render which stayed pending are emitted last, so they
+    are the first to disappear: the check has to stay inside the budget, say in the log
+    when it cannot, and keep the diagnosis in the job summary as well.
+    """
+
+    def setUp(self):
+        os.environ.pop('RENDERER_TEST', None)
+        spec = importlib.util.spec_from_file_location('local_renderer_notices',
+                                                      ROOT / 'scripts/test_local_renderer.py')
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def test_the_budget_is_what_github_publishes(self):
+        import test_asset_import
+        self.assertEqual(test_asset_import.MAX_NOTICE_ANNOTATIONS, 10)
+
+    def test_a_notice_past_the_budget_is_still_written_with_the_reason(self):
+        import test_asset_import
+        self.addCleanup(setattr, test_asset_import, 'notice_annotations',
+                        test_asset_import.notice_annotations)
+        test_asset_import.notice_annotations = 0
+        printed = io.StringIO()
+        with mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), \
+                contextlib.redirect_stdout(printed):
+            for index in range(test_asset_import.MAX_NOTICE_ANNOTATIONS + 1):
+                test_asset_import.notice(f'probe {index}')
+        text = printed.getvalue()
+        self.assertEqual(text.count('::notice title=Asset import check::'), 10)
+        self.assertIn('probe 10', text)
+        self.assertIn('publishes only the first 10', text)
+
+    def test_the_run_cannot_spend_more_notices_than_the_budget(self):
+        source = (ROOT / 'scripts/test_local_renderer.py').read_text()
+        body = source[source.index('def main():'):]
+        # A call site inside a loop would emit once per pass, and the check has no such
+        # loop, so the number of call sites is the number of notices a run can produce.
+        call_sites = [line.strip() for line in body.splitlines()
+                      if 'notice(' in line and not line.strip().startswith('#')]
+        self.assertLessEqual(len(call_sites), 10,
+                             'a run must not emit more notices than GitHub publishes: '
+                             + repr(call_sites))
+
+    def test_the_avatar_diagnosis_is_one_notice_and_reaches_the_summary(self):
+        source = (ROOT / 'scripts/test_local_renderer.py').read_text()
+        branch = source[source.index('elif status in (501, 502):'):]
+        branch = branch[:branch.index('\n        else:')]
+        self.assertEqual(branch.count('notice('), 1)
+        self.assertIn('job_summary(', branch)
+
+    def test_the_summary_helper_appends_and_never_raises(self):
+        with mock.patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': ''}, clear=False):
+            self.module.job_summary('nowhere to write this')  # no summary: a silent no-op
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'summary.md'
+            with mock.patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': str(path)}):
+                self.module.job_summary('the body\n')
+            self.assertEqual(path.read_text(), 'the body\n')
+            with mock.patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': directory}):
+                self.module.job_summary('writing to a directory must not raise')
 
 
 class PixelReaderTest(unittest.TestCase):
