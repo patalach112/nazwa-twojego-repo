@@ -85,15 +85,15 @@ with open(path, 'x') as stream:
 client = renderer.RccClient()
 job_id = str(uuid.uuid4())
 job = ET.Element('job')
-for key, value in {{'id': job_id, 'category': 0, 'cores': 1, 'expirationInSeconds': timeout}}.items():
+for key, value in {'id': job_id, 'category': 0, 'cores': 1, 'expirationInSeconds': timeout}.items():
     ET.SubElement(job, key).text = str(value)
 script = ET.Element('script')
 ET.SubElement(script, 'name').text = script_type
-ET.SubElement(script, 'script').text = json.dumps({{
+ET.SubElement(script, 'script').text = json.dumps({
     'Mode': 'ExecuteScript',
-    'Settings': {{'Type': script_type, 'Arguments': arguments}},
-    'Arguments': {{}},
-}})
+    'Settings': {'Type': script_type, 'Arguments': arguments},
+    'Arguments': {},
+})
 
 opened = False
 try:

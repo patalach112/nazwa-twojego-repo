@@ -845,6 +845,11 @@ class ProbeTest(unittest.TestCase):
         self.assertNotIn('internalscripts/thumbnails', program,
                          'the probe must never write next to the shipped thumbnail scripts')
 
+    def test_the_generated_program_is_valid_python(self):
+        # It is sent over stdin, so a typo only fails a whole CI cycle later.
+        program, _ = self.program()
+        compile(program, '<probe>', 'exec')
+
     def test_a_probe_that_cannot_run_is_reported_not_raised(self):
         self.assertIn('could not run', probe_rcc_image.run_probe(9, run=lambda program: (1, 'no such service')))
 
