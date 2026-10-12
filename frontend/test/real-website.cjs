@@ -29,10 +29,13 @@ const passed = [];
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 function observe(page) {
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', error => errors.push({name: error.name, message: error.message, stack: (error.stack || '').slice(0, 800)}));
   page.on('response', response => {
     if (response.status() >= 500 || response.status() === 404) {
-      serverFailures.push(response.status() + ' ' + new URL(response.url()).pathname);
+      const url = new URL(response.url());
+      const proxied = url.searchParams.get('url');
+      const targetPath = proxied ? new URL(proxied).pathname : url.pathname;
+      serverFailures.push(response.status() + ' ' + targetPath);
     }
   });
   page.on('request', req => {
@@ -170,7 +173,8 @@ async function main() {
     console.log('Real frontend/backend account integration passed; RCC games and rendering remain separate tests.');
   } catch (error) {
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({passed, error:error.message, errors, serverFailures, externalRequests:[...externalRequests]}, null, 2));
-    if (process.env.GITHUB_ACTIONS === 'true') console.error('::error title=Real website regression::' + error.message.replaceAll('%','%25').replaceAll('\r','%0D').replaceAll('\n','%0A'));
+    const diagnostic = JSON.stringify({message:error.message, passed, errors, serverFailures, externalRequests:[...externalRequests]}).slice(0, 3500);
+    if (process.env.GITHUB_ACTIONS === 'true') console.error('::error title=Real website regression::' + diagnostic.replaceAll('%','%25').replaceAll('\r','%0D').replaceAll('\n','%0A'));
     throw error;
   } finally {await browser.close();}
 }
