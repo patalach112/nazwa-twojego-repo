@@ -1,0 +1,67 @@
+name: Real website accounts
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  website:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test isolated persistent Docker configuration
+        run: python3 -m unittest discover -s scripts -p test_local_docker.py -v
+      - name: Generate disposable real database configs
+        run: python3 scripts/configure_local_docker.py --database-name marine_website_tests --project-name marine-website-tests --test
+      - name: Build and start the actual website, frontend, migrations, Postgres and Redis
+        run: ./scripts/local-stack.sh up --build -d
+      - name: Install browser test dependencies
+        working-directory: frontend
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright-core install --with-deps chromium
+      - name: Register, log in and inspect the actual frontend/backend on both ports
+        env:
+          REAL_WEBSITE_TEST: '1'
+        run: node frontend/test/real-website.cjs
+      - name: Annotate Docker failures without exposing private configuration
+        if: failure()
+        run: |
+          ./scripts/local-stack.sh ps -a
+          ./scripts/local-stack.sh logs --no-color --tail 100 website frontend migrations > "$RUNNER_TEMP/local-website.log"
+          python3 - <<'PY'
+          import json, os, pathlib
+          text = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'local-website.log').read_text()
+          config = json.loads(pathlib.Path('docker/local/website.json').read_text())
+          def redact(value):
+              global text
+              if isinstance(value, dict):
+                  for key, child in value.items():
+                      if isinstance(child, str) and any(word in key.lower() for word in ('secret','authorization','sessions','games','postgres')):
+                          text = text.replace(child, '[redacted]')
+                      elif isinstance(child, dict): redact(child)
+          redact(config)
+          diagnostics = '\n'.join(text.splitlines()[-120:])
+          print(diagnostics)
+          print('::error title=Local website diagnostics::' + diagnostics.replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
+          PY
+      - name: Retain actual website screenshots and browser report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-website-account-review
+          path: frontend/.visual-results/integration
+          if-no-files-found: warn
+      - name: Stop disposable containers
+        if: always()
+        run: ./scripts/local-stack.sh down

@@ -69,3 +69,13 @@ and binary data, routes `/api/proxy` to Next and does not share personalized
 HTML in a URL-only cache. Auth forms use the already-bundled Bootstrap assets
 rather than requiring external CDNs. Pages using runtime configuration render
 on the server instead of baking a build-time deployment URL into static HTML.
+
+## Actual website accounts
+
+The fixture suite remains a rendering regression, not login evidence.
+`test/real-website.cjs` is a separate opt-in test against the real local Docker
+stack, .NET session middleware, PostgreSQL and Redis. It registers through Razor,
+logs out, rejects an invalid password, logs in correctly and checks account
+session persistence after restarting frontend/backend. It uses a disposable
+`*_tests` database and never seeds a fixture session. See
+`../../docker/local-stack/README.md`; artifacts use `.visual-results/integration/`.

@@ -1,0 +1,94 @@
+# Use scripts/local-stack.sh so the matching private configs are generated first.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Run scripts/local-stack.sh first}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/local-stack.sh first}
+    volumes:
+      - local-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U postgres -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, 'yes']
+    volumes:
+      - local-redis:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrations:
+    build:
+      context: .
+      dockerfile: docker/local-stack/migrations.Dockerfile
+    user: '${LOCAL_UID}:${LOCAL_GID}'
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./docker/local/migrations.json:/app/config.json:ro
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  website:
+    build:
+      context: .
+      dockerfile: docker/local-stack/website.Dockerfile
+    user: '${LOCAL_UID}:${LOCAL_GID}'
+    init: true
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:${BACKEND_PORT:-5000}:5000'
+    volumes:
+      - ./docker/local/website.json:/app/appsettings.json:ro
+      - ./docker/local/game-servers.json:/app/game-servers.json:ro
+      - ./docker/local/data:/data
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: [CMD-SHELL, 'test "$$(curl --silent --output /dev/null --write-out "%{http_code}" http://127.0.0.1:5000/apisite/users/v1/users/authenticated)" = 401']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    stop_grace_period: 15s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/local-stack/frontend.Dockerfile
+    user: '${LOCAL_UID}:${LOCAL_GID}'
+    init: true
+    depends_on:
+      website:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:${FRONTEND_PORT:-3000}:3000'
+    volumes:
+      - ./docker/local/frontend.json:/app/config.json:ro
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: [CMD, node, -e, 'fetch("http://127.0.0.1:3000/").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))']
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 15s
+    stop_grace_period: 15s
+
+volumes:
+  local-postgres:
+  local-redis:

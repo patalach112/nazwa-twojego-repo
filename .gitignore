@@ -86,3 +86,6 @@ __pycache__/
 
 # Local investigation scratch files
 /.cache/
+
+# Persistent private Docker configs and local account uploads
+/docker/local/

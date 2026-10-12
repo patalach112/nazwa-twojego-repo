@@ -356,6 +356,21 @@ legacy game-server expecting it to supply the missing Linux RCC runtime.
 
 `start.bat` starts the legacy components in separate windows; it does not start the new arbiter. Generate or copy the configs first, then run `npm start` from `game-arbiter/` separately. The Windows RCC binaries do not supply the unfinished game launcher. See **WHAT IS STILL MISSING** above.
 
+## real local frontend and backend in Docker
+
+For a coordinated Debian setup with actual accounts rather than visual fixtures:
+
+```bash
+./scripts/local-stack.sh
+```
+
+This builds/runs the website, frontend, migrations, PostgreSQL and Redis with
+separate persistent private configs. Both `http://localhost:3000/` and
+`http://localhost:5000/` serve the real website once healthy. Local signup/login
+use the existing Razor forms. See `docker/local-stack/README.md` for requirements,
+health checks, configuration preservation, backups and isolated browser tests.
+RCC/client joins and rendering are not supplied by this website-only stack.
+
 ## local accounts without Discord
 
 New local configs enable `LocalRegistrationEnabled`. `/auth/signup` creates a
