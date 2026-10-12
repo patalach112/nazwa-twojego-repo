@@ -122,8 +122,11 @@ runtime copy, and this build ships those scripts itself (`Image.lua`,
 They are used exactly as shipped: `Settings.Arguments` arrives as varargs, each file
 declares its own argument list, and nothing in this repository writes to them.
 The entrypoint only *verifies* that every script in
-`docker/rcc-wine/required-thumbnail-scripts.txt` exists and stops with a clear message
-when the mounted build is missing one. `docker/renderer/` builds the arguments for the
+`docker/rcc-wine/required-thumbnail-scripts.txt` exists. Missing ones are reported and
+the container still starts, because the standalone experiment mounts several builds
+and the older ones ship fewer scripts; `RCC_VERIFY_THUMBNAIL_SCRIPTS=1` turns the report
+into a refusal to start, and the local renderer's own RCC service sets it because the
+renderer asks for those scripts by name. `docker/renderer/` builds the arguments for the
 routes it serves, and `scripts/test_renderer_contract.py` parses these shipped files and
 fails when the renderer and a script disagree.
 

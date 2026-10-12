@@ -141,24 +141,23 @@ class RccClient:
     def health(self):
         """What /healthz reports: RCC's version and how recently it spoke to us.
 
-        A render job keeps this process busy for seconds, and RCC can be slow to
-        answer GetVersion while it renders, so a recent contact is enough for the
-        service to be considered healthy instead of flapping in the middle of a job.
+        `OpenJobEx` only answers when its render finishes, so a job in flight means
+        RCC is deliberately not answering: that is work in progress, not a failure.
+        While no job is in flight, RCC has to have answered within
+        HEALTH_STALE_SECONDS or the renderer reports itself unhealthy instead of
+        pretending a dead RCC is fine.
         """
         age = time.monotonic() - self.last_contact_at if self.last_contact_at else None
-        fresh = age is not None and age <= HEALTH_STALE_SECONDS
-        error = None
-        if age is None or not fresh:
+        if not self.busy and (age is None or age > HEALTH_STALE_SECONDS):
             try:
-                version = self.get_version(max_age=0)
+                self.get_version(max_age=0)
                 age = time.monotonic() - self.last_contact_at
-                fresh = True
             except RenderError as failure:
-                error = str(failure)
-        if not fresh:
-            raise RenderError(error or 'RCC has not answered any request yet')
-        return {'version': self.version, 'lastContactSeconds': None if age is None else round(age, 1),
-                'busy': self.busy, 'stale': not (age is None or age <= 5.0)}
+                raise RenderError(str(failure)) from None
+        if age is None:
+            raise RenderError('RCC has not answered any request yet')
+        return {'version': self.version, 'lastContactSeconds': round(age, 1),
+                'busy': self.busy, 'stale': age > 5.0}
 
     def get_version(self, max_age=10.0):
         if self.version and time.monotonic() - self.version_at < max_age:
@@ -476,7 +475,8 @@ class Handler(BaseHTTPRequestHandler):
                                  'warmup': self.renderer.warmup})
         except RenderError as error:
             self.send_json(503, {'success': False, 'message': str(error),
-                                 'rcc': {'version': self.renderer.rcc.version},
+                                 'rcc': {'version': self.renderer.rcc.version,
+                                         'busy': self.renderer.rcc.busy},
                                  'warmup': self.renderer.warmup})
 
     def do_POST(self):
@@ -527,6 +527,12 @@ def main():
     server.daemon_threads = True
     log('listening', port=port, rcc=service.rcc.url, website=service.base_url,
         authorization=bool(Handler.authorization))
+    # Contact RCC once before any job starts: the warm-up job keeps RCC busy, and a
+    # renderer that has never spoken to RCC cannot report health during it.
+    try:
+        log('rcc_startup', version=service.rcc.get_version(max_age=0))
+    except RenderError as error:
+        log('rcc_startup_failed', detail=str(error))
     # The website's render client gives a request ten seconds, so Wine's and RCC's
     # first-render cost is paid here instead of inside a user request.
     threading.Thread(target=service.warm_up, daemon=True).start()

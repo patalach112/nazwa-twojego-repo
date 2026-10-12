@@ -110,11 +110,11 @@ pending instead of being faked:
   ten-second budget fails in the website's log and the thumbnail stays pending instead
   of being stored wrong. Longer renders need a website-side change and are not
   pretended to work here.
-* `/healthz` reports RCC as healthy while RCC answered anything within
-  `RENDERER_HEALTH_STALE` seconds (120 by default). A long render makes RCC slow to
-  answer a `GetVersion` query, and a health check that ignored that would flap in the
-  middle of a job; a service that has not heard from RCC at all is still reported
-  unhealthy and the answer is `503`.
+* `/healthz` distinguishes a busy RCC from a dead one. `OpenJobEx` only answers when
+  its render finishes, so while a job is in flight the renderer reports the last RCC
+  contact it had and stays green; while idle it re-asks RCC and only answers `503`
+  when RCC has not spoken within `RENDERER_HEALTH_STALE` seconds (120 by default).
+  RCC is contacted once at startup, before the warm-up job takes it.
 
 ## What is not proven
 

@@ -105,6 +105,8 @@ services:
       RCC_PORT: "64989"
       RCC_EXE: ${RCC_EXE:-RCCService.exe}
       RCC_SOAP_NAMESPACE: ${RCC_SOAP_NAMESPACE:-http://silrev.biz/}
+      # The renderer asks RCC for these scripts by name, so the build must have them.
+      RCC_VERIFY_THUMBNAIL_SCRIPTS: "1"
     volumes:
       - ${RCC_DIRECTORY:-./RCCService/RCCService2020}:/opt/rcc:ro
     # No published port: only the renderer service talks to RCC, over the compose network.

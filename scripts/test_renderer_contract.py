@@ -23,6 +23,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -298,6 +299,60 @@ class RccReplyTest(unittest.TestCase):
         with self.assertRaises(renderer.RenderError) as caught:
             client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
         self.assertIn('placeholder', str(caught.exception))
+
+
+class RccHealthTest(unittest.TestCase):
+    """Health has to distinguish a busy RCC from a dead one."""
+
+    def start_rcc(self, body):
+        class Soap(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get('Content-Length') or 0)
+                self.rfile.read(length)
+                payload = body.encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/xml; charset=utf-8')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *arguments):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Soap)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return f'http://127.0.0.1:{server.server_address[1]}/'
+
+    def version_reply(self, version='0.450.0.411923'):
+        return ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+                f'<s:Body><GetVersionResponse xmlns="http://silrev.biz/"><GetVersionResult>{version}'
+                '</GetVersionResult></GetVersionResponse></s:Body></s:Envelope>')
+
+    def test_a_render_in_flight_is_healthy_not_broken(self):
+        client = renderer.RccClient(url=self.start_rcc(self.version_reply()), job_timeout=30)
+        client.version = '0.450.0.411923'
+        client.last_contact_at = time.monotonic() - 300
+        client.busy = True
+        health = client.health()
+        self.assertEqual(health['version'], '0.450.0.411923')
+        self.assertTrue(health['busy'])
+        self.assertGreater(health['lastContactSeconds'], 100)
+
+    def test_a_stale_idle_renderer_asks_rcc_again(self):
+        client = renderer.RccClient(url=self.start_rcc(self.version_reply('9.9.9.9')), job_timeout=30)
+        client.last_contact_at = time.monotonic() - 300
+        health = client.health()
+        self.assertEqual(health['version'], '9.9.9.9')
+        self.assertLess(health['lastContactSeconds'], 5)
+
+    def test_an_unreachable_rcc_is_reported_as_unhealthy(self):
+        client = renderer.RccClient(url='http://127.0.0.1:1/', job_timeout=2)
+        client.last_contact_at = time.monotonic() - 300
+        with self.assertRaises(renderer.RenderError):
+            client.health()
 
 
 class AuthorizationSourceTest(unittest.TestCase):

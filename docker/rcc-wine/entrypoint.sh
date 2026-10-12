@@ -40,10 +40,15 @@ for script in $(grep -v '^#' /usr/local/bin/required-thumbnail-scripts.txt); do
     fi
 done
 if [ -n "$missing" ]; then
-    echo "RCC build is missing thumbnail scripts:$missing" >&2
-    exit 1
+    echo "this build ships no thumbnail script for:$missing" >&2
+    if [ "${RCC_VERIFY_THUMBNAIL_SCRIPTS:-}" = "1" ]; then
+        echo "refusing to start: the local renderer would answer 502 for those types" >&2
+        exit 1
+    fi
+    echo "continuing without them (set RCC_VERIFY_THUMBNAIL_SCRIPTS=1 to require them)" >&2
+else
+    echo "verified $(grep -c -v '^#' /usr/local/bin/required-thumbnail-scripts.txt) RCC thumbnail scripts"
 fi
-echo "verified $(grep -c -v '^#' /usr/local/bin/required-thumbnail-scripts.txt) RCC thumbnail scripts"
 
 python3 - <<'PY'
 from pathlib import Path

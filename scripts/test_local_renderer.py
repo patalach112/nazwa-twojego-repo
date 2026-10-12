@@ -200,6 +200,28 @@ def thumbnail_file_for_key(thumbnails_directory, key):
     return path
 
 
+def wait_for_health(timeout=WARMUP_TIMEOUT):
+    """Waits for the renderer's health answer.
+
+    A render job in flight leaves RCC unable to answer a version query, so a busy
+    renderer is waited for and reported rather than treated as broken.
+    """
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(RENDERER_URL + "/healthz", timeout=30) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            with error:
+                try:
+                    last = json.loads(error.read())
+                except ValueError:
+                    last = {"message": f"HTTP {error.code}"}
+        time.sleep(5)
+    fail(f"the renderer never reported healthy RCC within {timeout}s; last answer: {last}")
+
+
 def png_constants(data):
     """(format, width, height) without decoding the pixels; None when not a PNG."""
     if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) < 24 or data[12:16] != b"IHDR":
@@ -292,9 +314,9 @@ def main():
         wait_for_renderer_authorization(authorization)
         notice("the renderer accepted the enabled Authorization value without being restarted")
 
-        # 1. Health is RCC's own answer, not an open TCP port.
-        with urllib.request.urlopen(RENDERER_URL + "/healthz", timeout=30) as response:
-            health = json.loads(response.read())
+        # 1. Health is RCC's own answer, not an open TCP port. While RCC is busy with
+        #    a render job it cannot answer a version query, so this waits for it.
+        health = wait_for_health()
         rcc = health.get("rcc") or {}
         if not health.get("success") or not rcc.get("version"):
             fail(f"the renderer did not report a working RCC: {health}")
