@@ -105,7 +105,10 @@ def notice(message):
                   f"publishes only the first {MAX_NOTICE_ANNOTATIONS} as annotations)", flush=True)
             return
         notice_annotations += 1
-        print("::notice title=Asset import check::" + message)
+        # A workflow command ends at a raw newline, so a multi-line notice would be cut
+        # after its first line in the annotation (the log keeps the whole text).
+        escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print("::notice title=Asset import check::" + escaped)
 
 
 class FormTokenParser(html.parser.HTMLParser):

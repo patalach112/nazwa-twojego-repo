@@ -1082,6 +1082,23 @@ class NoticeBudgetTest(unittest.TestCase):
         import test_asset_import
         self.assertEqual(test_asset_import.MAX_NOTICE_ANNOTATIONS, 10)
 
+    def test_a_multi_line_notice_survives_as_one_annotation(self):
+        # The avatar diagnosis is four lines long: a raw newline would end the workflow
+        # command and the annotation would show only the first line.
+        import test_asset_import
+        self.addCleanup(setattr, test_asset_import, 'notice_annotations',
+                        test_asset_import.notice_annotations)
+        test_asset_import.notice_annotations = 0
+        printed = io.StringIO()
+        with mock.patch.dict(os.environ, {'GITHUB_ACTIONS': 'true'}), \
+                contextlib.redirect_stdout(printed):
+            test_asset_import.notice('first line\nsecond line 100%')
+        commands = [line for line in printed.getvalue().splitlines()
+                    if line.startswith('::notice title=Asset import check::')]
+        self.assertEqual(len(commands), 1)
+        self.assertIn('first line%0Asecond line 100%25', commands[0])
+        self.assertIn('first line\nsecond line 100%', printed.getvalue().split('::notice')[0])
+
     def test_a_notice_past_the_budget_is_still_written_with_the_reason(self):
         import test_asset_import
         self.addCleanup(setattr, test_asset_import, 'notice_annotations',
