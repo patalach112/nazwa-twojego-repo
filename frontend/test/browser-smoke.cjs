@@ -96,8 +96,14 @@ async function main() {
         if (route === '/home') await context.addCookies([{name: 'visual_preview', value: 'member', url: origin}]);
         const response = await page.goto(origin + route, {waitUntil: 'domcontentloaded', timeout: 90000});
         assert.equal(response.status(), 200);
-        if (route === '/home') await page.getByText('Hello, PreviewBuilder!', {exact: true}).waitFor();
-        else await page.locator('nav').getByRole('link', {name: 'Login', exact: true}).waitFor();
+        if (route === '/home') {
+          await page.getByText('Hello, PreviewBuilder!', {exact: true}).waitFor();
+          if (viewport.width >= 992) {
+            const profile = page.locator('nav').locator('a[href="/users/42/profile"]');
+            await profile.waitFor();
+            assert.equal(await profile.innerText(), 'PreviewBuilder');
+          }
+        } else await page.locator('nav').getByRole('link', {name: 'Login', exact: true}).waitFor();
         if (route === '/' || route === '/games') await page.getByText('Classic Crossroads', {exact: true}).first().waitFor();
         if (route === '/catalog') await page.getByText('Classic Cap', {exact: true}).first().waitFor();
         await page.locator('nav').getByPlaceholder('Search', {exact: true}).fill('classic');

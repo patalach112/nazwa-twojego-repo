@@ -134,8 +134,13 @@ async function main() {
     }
     await page.setViewportSize({width: 1440, height: 1000});
     for (const route of ['/games', '/catalog']) {
+      phase = 'member view ' + route;
       await page.goto(frontend + route, {waitUntil: 'domcontentloaded'});
-      await page.locator('nav').getByRole('link', {name: username, exact: true}).waitFor();
+      // CSS-generated punctuation participates in the accessible link name.
+      // Check the account's destination and DOM text, not that decoration.
+      const profile = page.locator('nav').locator(`a[href="/users/${user.id}/profile"]`);
+      await profile.waitFor();
+      assert.equal(await profile.innerText(), username);
       await snapshot(page, route.slice(1));
     }
     passed.push('Real member dashboard on both ports and widths, games and catalog');
