@@ -669,6 +669,16 @@ class WebsiteThumbnailContractTest(unittest.TestCase):
                       'game/thumbnail', 'player/thumbnail-3d'):
             self.assertIn('url = "' + route + '"', handler, f'{route} is no longer called')
 
+    def test_the_v1_asset_thumbnail_route_queries_asset_thumbnails(self):
+        controller = self.source('Roblox/Roblox.Website/Controllers/v1/Thumbnails.cs')
+        self.assertIn('[HttpGet("assets")]', controller)
+        self.assertIn('services.thumbnails.GetAssetThumbnails(parsed)', controller)
+
+    def test_marketplace_product_info_route_exists(self):
+        controller = self.source('Roblox/Roblox.Website/Controllers/v1/Api.cs')
+        self.assertIn('[HttpGet("marketplace/productinfo")]', controller)
+        self.assertIn('services.assets.GetAssetCatalogInfo(assetId)', controller)
+
 
 class ContainerLayoutTest(unittest.TestCase):
     """RCC and the renderer must stay in one container over loopback."""

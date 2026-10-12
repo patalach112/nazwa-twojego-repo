@@ -206,7 +206,10 @@ does: through the site's own image handlers (`/thumbs/asset.ashx`,
 from, following the redirect to `/images/thumbnails/...` and comparing the bytes with the
 file the website stored, so a placeholder or a redirect to nowhere fails the check. The
 item the model render belongs to is asked for through the catalogue details API the item
-page calls, so an item whose page could not describe it fails too. The avatar image has to look like a character
+page calls, the product info API the item page SSR loads, and the modern thumbnail API
+the frontend store queries (`/apisite/thumbnails/v1/assets`), with the resulting image
+URL fetched anonymously from the page origin, so an item whose page could not describe
+or show it fails too. The avatar image has to look like a character
 and not like a background, and the pixels are re-checked after the website's own resize.
 The headshot route is covered through the avatar step, which asserts the stored
 150x150 file. The hat and mesh routes are implemented and clothing is refused with a

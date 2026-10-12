@@ -14,9 +14,11 @@ profile:
 2. an uploaded image asset gets a 420x420 thumbnail whose pixels are the uploaded
    texture, stored in the configured thumbnail directory and served from its URL,
 3. an uploaded model asset gets its own, different 3D render, stored as a separate file,
-   recorded as awaiting staff approval in the database (asserted, not hidden) and reached
-   through the site's own image handler (/thumbs/asset.ashx) from the origin a page is
-   loaded from, redirect chain and bytes included,
+   recorded as awaiting staff approval in the database (asserted, not hidden),
+   described by the catalogue details and product info APIs, reported Completed with its
+   stored URL by the modern thumbnail API, served to an anonymous browser from the page
+   origin, and reached through the site's own image handler (/thumbs/asset.ashx),
+   redirect chain and bytes included,
 4. an account's own avatar is rendered through the website itself: posting to the
    website's redraw endpoint makes it store an avatar thumbnail and a headshot under the
    configured thumbnail directory, report them through the same thumbnail API the
@@ -197,6 +199,22 @@ def user_avatar_thumbnail(client, backend, user_id, kind="avatar"):
                                  f"?userIds={int(user_id)}")
     if status != 200:
         fail(f"the {kind} thumbnail API answered HTTP {status}: "
+             f"{body.decode('utf-8', 'replace')[:200]}")
+    entries = json.loads(body).get("data") or []
+    return entries[0] if entries else {"state": "Pending", "imageUrl": None}
+
+
+def catalog_asset_thumbnail(client, backend, asset_id):
+    """The website's thumbnail API for an asset, the way the catalog and item pages ask.
+
+    The catalog and item pages (frontend/stores/thumbnailStore.js and
+    frontend/services/thumbnails.js multiGetAssetThumbnails) query this endpoint
+    to display item cards and detail views.
+    """
+    status, _, body = client.get(
+        f"{backend}/apisite/thumbnails/v1/assets?assetIds={int(asset_id)}&format=png&size=420x420")
+    if status != 200:
+        fail(f"the asset thumbnail API answered HTTP {status}: "
              f"{body.decode('utf-8', 'replace')[:200]}")
     entries = json.loads(body).get("data") or []
     return entries[0] if entries else {"state": "Pending", "imageUrl": None}
@@ -819,6 +837,36 @@ def main():
             fail(f"the catalogue details API describes asset {model_id} as "
                  f"{described[0].get('name')!r}, not the name it was uploaded with")
 
+        # The item page's getServerSideProps (frontend/pages/catalog/[assetId]/[name].js)
+        # loads the product info to render the title, meta tags and page structure.
+        status, _, product_body = owner.get(
+            f"{backend}/apisite/api/marketplace/productinfo?assetId={model_id}")
+        if status != 200:
+            fail(f"the product info API answered HTTP {status} for asset {model_id}: "
+                 f"{product_body[:200]!r}")
+        product_info = json.loads(product_body)
+        if product_info.get("AssetId") != model_id or product_info.get("Name") != "RenderModel":
+            fail(f"the product info API answered with wrong asset data: {product_info}")
+
+        # The catalog page (frontend/stores/thumbnailStore.js) asks the modern thumbnail
+        # endpoint, not /v1/batch or /thumbs/asset.ashx. It must report the item Completed
+        # and point to the rendered thumbnail file.
+        asset_api_entry = catalog_asset_thumbnail(owner, backend, model_id)
+        if asset_api_entry.get("state") != "Completed" or not asset_api_entry.get("imageUrl"):
+            fail(f"the asset thumbnail API did not report asset {model_id} as Completed: "
+                 f"{asset_api_entry}")
+        if urllib.parse.urlsplit(asset_api_entry["imageUrl"]).path != \
+                urllib.parse.urlsplit(model_entry["imageUrl"]).path:
+            fail(f"the asset thumbnail API reports imageUrl {asset_api_entry['imageUrl']}, "
+                 f"not the stored {model_entry['imageUrl']}")
+        # An anonymous browser viewing the item page or catalog fetches this imageUrl
+        # directly from the frontend; it must serve the stored bytes.
+        catalog_img_url = browser_url_for(asset_api_entry["imageUrl"], frontend)
+        status, _, catalog_served = Client().get(catalog_img_url)
+        if status != 200 or catalog_served != model_path.read_bytes():
+            fail(f"the catalog image URL {catalog_img_url} answered HTTP {status} with "
+                 f"{len(catalog_served)} bytes, not {len(model_path.read_bytes())} bytes")
+
         # The picture a page actually shows comes from the site's own image handler, so
         # the redirect chain has to end on this file and not on /img/placeholder.png.
         model_handler = browser_image(owner, frontend, f"/thumbs/asset.ashx?assetId={model_id}",
@@ -832,8 +880,8 @@ def main():
                  f"{len(model_path.read_bytes())} bytes of the model thumbnail")
         notice(f"model asset {model_id} rendered its own 3D thumbnail, stored as {key} "
                f"(awaiting approval {moderation}), served at {model_entry['imageUrl']}, "
-               f"described by the catalogue details API the item page calls and reachable "
-               f"through /thumbs/asset.ashx for a page's own <img>")
+               f"described by the catalogue details and product info APIs, and reachable "
+               f"through both /apisite/thumbnails/v1/assets and /thumbs/asset.ashx for a page's own <img>")
 
         # 3b. The account's own avatar, the way the browser gets it: the website's
         #     redraw endpoint renders a headshot and the avatar through RenderingHandler,
