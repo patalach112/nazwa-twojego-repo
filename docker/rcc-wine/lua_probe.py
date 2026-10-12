@@ -2,6 +2,7 @@
 
 import os
 import urllib.request
+import urllib.error
 import uuid
 import xml.etree.ElementTree as ET
 
@@ -14,6 +15,10 @@ def call(method, children):
     body = ET.SubElement(envelope, f'{{{SOAP}}}Body')
     operation = ET.SubElement(body, f'{{{NAMESPACE}}}{method}')
     for child in children:
+        # The original SOAP contract uses a default namespace for both the
+        # operation and its argument elements, not just for the method name.
+        for element in child.iter():
+            element.tag = f'{{{NAMESPACE}}}{element.tag}'
         operation.append(child)
     request = urllib.request.Request(
         f"http://127.0.0.1:{int(os.environ.get('RCC_PORT', '64989'))}/",
@@ -21,7 +26,12 @@ def call(method, children):
         headers={'Content-Type': 'text/xml; charset=utf-8', 'SOAPAction': NAMESPACE + method},
         method='POST',
     )
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=30) as response:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        response = opener.open(request, timeout=30)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
         root = ET.fromstring(response.read())
     fault = root.find(f'.//{{{SOAP}}}Fault')
     if fault is not None:
@@ -37,14 +47,17 @@ def probe():
     script = ET.Element('script')
     ET.SubElement(script, 'name').text = 'WineSmoke'
     ET.SubElement(script, 'script').text = 'return "rcc-wine-smoke"'
+    opened = False
     try:
         reply = call('OpenJobEx', [job, script])
+        opened = True
         if not any(element.text == 'rcc-wine-smoke' for element in reply.iter()):
             raise RuntimeError('OpenJobEx did not return the Lua smoke token')
     finally:
-        identifier = ET.Element('jobID')
-        identifier.text = job_id
-        call('CloseJob', [identifier])
+        if opened:
+            identifier = ET.Element('jobID')
+            identifier.text = job_id
+            call('CloseJob', [identifier])
     print('OpenJobEx returned the Lua smoke token and CloseJob completed')
 
 
