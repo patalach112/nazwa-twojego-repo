@@ -143,11 +143,12 @@ async function main() {
       const redirect = await context.request.get(origin + '/login', {maxRedirects: 0});
       assert.equal(redirect.status(), 307);
       assert.equal(redirect.headers().location, '/auth/accountlogin');
-      await page.evaluate(() => localStorage.setItem('rbx_logo_style_v1', 'Roblox2016'));
+      await page.evaluate(() => localStorage.setItem('rbx_logo_style_v1', 'Pekora'));
       await page.reload({waitUntil: 'domcontentloaded'});
-      await page.waitForFunction(() => [...document.querySelectorAll('nav a[aria-label="Marine home"]')]
+      await page.waitForFunction(expected => [...document.querySelectorAll('nav a[aria-label="Marine home"]')]
         .filter(element => element.getBoundingClientRect().width > 0)
-        .some(element => getComputedStyle(element).backgroundImage.includes('roblox2016')));
+        .some(element => getComputedStyle(element).backgroundImage.includes(expected)),
+        viewport.width >= 1325 ? 'pekora-logo.png' : 'favicon.png');
       assert.deepEqual(errors, [], 'Browser errors after changing logo preferences');
       assert.deepEqual(failedRequests, [], 'Unexpected local HTTP failures after changing logo preferences');
       await context.close();

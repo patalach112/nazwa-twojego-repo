@@ -30,7 +30,9 @@ of origins. These are rendering and wiring failures, not just build failures.
 The checks cover the anonymous entry page, Games, Catalog and a signed-in
 **sample** dashboard at 1440, 390 and 320 pixels. They exercise the search
 suggestions and mobile sidebar, and check JavaScript errors, unexpected local HTTP failures,
-thumbnail loading, fonts, clipped navigation and horizontal page overflow.
+thumbnail loading, fonts, logo preferences, clipped navigation and horizontal
+page overflow. Legacy logo presets without bundled images fall back to the
+default instead of requesting nonexistent files.
 Login navigation is checked against `/auth/accountlogin`, the existing Razor
 password/2FA form; `/login` redirects there rather than importing an external
 cookie or calling a disabled authentication API. Direct Next previews rewrite

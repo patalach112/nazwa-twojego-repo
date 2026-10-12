@@ -1,36 +1,15 @@
 import { createUseStyles } from "react-jss";
-import { getTheme, themeType, getLogoStyle, logoStyle } from "../../../services/theme";
+import { getLogoStyle, logoStyle } from "../../../services/theme";
 import NavigationStore from "../../../stores/navigation";
 import AuthenticationStore from "../../../stores/authentication";
 
-const faviconImages = {
-    [logoStyle.Default]: 'url(/img/favicon.png)',
-    [logoStyle.MarineModern]: 'url(/img/marine_favicon.png)',
-    [logoStyle.Pekora]: 'url(/img/pekora_favicon.png)',
-    [logoStyle.PekoraBlue]: 'url(/img/pekora_blue_favicon.png)',
-    [logoStyle.ProjectX]: 'url(/img/projectx_favicon.png)',
-    [logoStyle.Silverium]: 'url(/img/silverium_favicon.png)',
-    [logoStyle.Roblox2009]: 'url(/img/roblox2009_favicon.svg)',
-    [logoStyle.Roblox2013]: 'url(/img/roblox2013_favicon.png)',
-	[logoStyle.Roblox2016]: 'url(/img/roblox2016_favicon.png)',
-    [logoStyle.Roblox2017]: 'url(/img/roblox2017_favicon.png)',
-    [logoStyle.Roblox2019]: 'url(/img/roblox2019_favicon.png)',
-};
-
+// Only these logo assets are bundled. Retain legacy preference names, but
+// fall back instead of requesting images that do not exist in this checkout.
+const faviconImages = {[logoStyle.Default]: 'url(/img/favicon.png)'};
 const logoImages = {
     [logoStyle.Default]: 'url(/img/logo.png)',
-    [logoStyle.MarineModern]: 'url(/img/marine_modern.png)',
-    [logoStyle.Pekora]: 'url(/img/pekora.png)',
-    [logoStyle.PekoraBlue]: 'url(/img/pekora_blue.png)',
-    [logoStyle.ProjectX]: 'url(/img/projectx.png)',
-    [logoStyle.Silverium]: 'url(/img/silverium.png)',
-    [logoStyle.Roblox2009]: 'url(/img/roblox2009.png)',
-    [logoStyle.Roblox2013]: 'url(/img/roblox2013.png)',
-	[logoStyle.Roblox2016]: 'url(/img/roblox2016.png)',
-    [logoStyle.Roblox2017]: 'url(/img/roblox2017.png)',
-    [logoStyle.Roblox2019]: 'url(/img/roblox2019.png)',
+    [logoStyle.Pekora]: 'url(/img/pekora-logo.png)',
 };
-
 
 const useLogoStyles = createUseStyles({
   imgDesktop: {
@@ -40,7 +19,6 @@ const useLogoStyles = createUseStyles({
     height: '40px',
     // backgroundImage: `url(/img/roblox_logo.svg)`,
     //backgroundImage: 'url(/img/holiday/projex_logo_studio.png)',
-    backgroundImage: p => logoImages[p.logo] || logoImages[logoStyle.Default],
     // backgroundSize: '122px 30px',
     backgroundSize: "100% auto",
     display: 'none',
@@ -52,7 +30,6 @@ const useLogoStyles = createUseStyles({
   },
   imgMobile: {
     //backgroundImage: `url(/img/logo_R.svg)`,
-	backgroundImage: p => faviconImages[p.logo] || faviconImages[logoStyle.Default],
     width: '30px',
     height: '30px',
     display: 'block',
@@ -99,7 +76,8 @@ const useLogoStyles = createUseStyles({
   },
 });
 const Logo = () => {
-  const s = useLogoStyles({ theme: getTheme(), logo: getLogoStyle() });
+  const s = useLogoStyles();
+  const logo = getLogoStyle();
   const navStore = NavigationStore.useContainer();
   const auth = AuthenticationStore.useContainer();
 
@@ -107,8 +85,8 @@ const Logo = () => {
     {auth.isAuthenticated && <button type='button' aria-label='Open navigation' aria-expanded={navStore.isSidebarOpen} className={s.openSideNavMobile + ' icon-menu'} onClick={() => {
       navStore.setIsSidebarOpen(!navStore.isSidebarOpen);
     }} />}
-    <a aria-label='Marine home' className={s.imgDesktop} href='/'></a>
-    <a aria-label='Marine home' className={s.imgMobile} href='/'></a>
+    <a aria-label='Marine home' className={s.imgDesktop} style={{backgroundImage: logoImages[logo] || logoImages[logoStyle.Default]}} href='/'></a>
+    <a aria-label='Marine home' className={s.imgMobile} style={{backgroundImage: faviconImages[logo] || faviconImages[logoStyle.Default]}} href='/'></a>
     {/*<div className={s.imgMobileWrapper}>
     
     </div>*/}
