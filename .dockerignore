@@ -1,4 +1,3 @@
-api/public
 api/storage
 api/node_modules
 Roblox/**/bin
@@ -10,3 +9,20 @@ AssetValidationService
 deployment
 economy-chat
 game-server
+
+.git
+.cache
+**/node_modules
+**/.next
+**/.visual-results
+**/bin
+**/obj
+**/config.json
+**/*.env
+**/appsettings.json
+**/local-secrets.json
+**/game-servers.json
+RCCService
+frontend/.visual-results
+data
+docker/local

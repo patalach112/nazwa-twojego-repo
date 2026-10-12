@@ -15,7 +15,7 @@ const CreateHelp = props => {
     );
 }
 
-export const getStaticProps = () => {
+export const getServerSideProps = async () => {
     return {
         props: {
             title: 'Creating Help - Marine',

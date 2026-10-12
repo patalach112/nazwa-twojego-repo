@@ -556,7 +556,7 @@ public class EconomyService : ServiceBase, IService
     {
         var dt = DateTime.UtcNow.Subtract(period);
         var result = await db.QuerySingleOrDefaultAsync<Dto.Total>(
-            "SELECT SUM(user_transaction.amount) AS total FROM user_transaction WHERE user_id_one = :user_id AND type = :type AND sub_type = :sub_type AND created_at >= :created_at",
+            "SELECT COALESCE(SUM(user_transaction.amount), 0) AS total FROM user_transaction WHERE user_id_one = :user_id AND type = :type AND (CAST(:sub_type AS integer) IS NULL OR sub_type = :sub_type) AND created_at >= :created_at",
             new
             {
                 user_id = userId,

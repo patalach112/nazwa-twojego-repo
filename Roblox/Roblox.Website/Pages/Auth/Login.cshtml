@@ -6,7 +6,7 @@
 }
 
 <div class="container mt-4">
-    @if (string.IsNullOrEmpty(Model.applicationId))
+    @if (!Roblox.Configuration.LocalRegistrationEnabled && string.IsNullOrEmpty(Model.applicationId))
     {
         <div class="row">
             <div class="col-12">
@@ -26,14 +26,14 @@
                 }
                 else
                 {
-                    <p>If you do not have an account, you can <a href="/auth/application">create one here</a>.</p>
+                    <p>If you do not have an account, you can <a href="/auth/signup">create one here</a>.</p>
                 }
                 @if (Model.errorMessage != null)
                 {
                     <p class="text-danger">@Model.errorMessage</p>
                 }
                 <form method="post">
-                    <input disabled="@Model.loginDisabled" type="text" placeholder="Username" name="username" class="form-control mb-1"/>
+                    <input disabled="@Model.loginDisabled" type="text" placeholder="Username" name="username" value="@Model.username" class="form-control mb-1"/>
                     <input disabled="@Model.loginDisabled" type="password" placeholder="Password" name="password" class="form-control mb-1"/>
                     <input disabled="@Model.loginDisabled" type="text" autocomplete="off" minlength="6" maxlength="6" pattern="\d*" placeholder="2FA Code (leave blank if not set)" name="totpcode" class="form-control mb-1"/>
                     @if (Model.applicationId != null)
@@ -44,11 +44,14 @@
                     {
                         <p><a href="/auth/password-reset">Reset Password</a></p>
                     }
-                    <div class="cf-turnstile text-center mt-4 mb-2" data-sitekey="@Model.siteKey" data-theme="dark"></div>
+                    @if (Model.captchaEnabled)
+                    {
+                        <div class="cf-turnstile text-center mt-4 mb-2" data-sitekey="@Model.siteKey" data-theme="dark"></div>
+                    }
                     @Html.AntiForgeryToken()
                     <div class="d-grid gap-2 mt-4 mb-4">
                         <input disabled="@Model.loginDisabled" class="btn btn-primary btn-custom" type="submit" value="Login" id="login-submit"/>
-                    @if (!Model.loginDisabled)
+                    @if (!Model.loginDisabled && !string.IsNullOrEmpty(Roblox.Configuration.DiscordClientId))
                     {
                         <hr class="m-0 my-2">
 
@@ -63,4 +66,7 @@
     </div>
 </div>
 
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+@if (Model.captchaEnabled)
+{
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+}

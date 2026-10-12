@@ -113,10 +113,12 @@ const useStyles = createUseStyles({
         verticalAlign: 'bottom',
         borderRadius: '50%',
         overflow: 'hidden',
+        flexShrink: 0,
         '@media (max-width: 991px)': {
-            width: '90px',
-            height: '90px',
-            marginLeft: '10px',
+            width: '80px',
+            height: '80px',
+            marginLeft: 0,
+            marginRight: '12px',
         },
         '& img': {
             width: '100%',
@@ -132,13 +134,14 @@ const useStyles = createUseStyles({
         },
     },
     homeHeaderText: {
-        float: 'left',
-        width: 'calc(100% - 180px - 36px)',
-        '& h1': {
-        }
+        flex: 1,
+        minWidth: 0,
+        '& h1': {margin: 0},
     },
     helloMessage: {
         fontSize: '36px',
+        overflowWrap: 'anywhere',
+        '@media (max-width: 767px)': {fontSize: '28px'},
         fontWeight: 800,
         lineHeight: '1em',
         cursor: 'pointer',

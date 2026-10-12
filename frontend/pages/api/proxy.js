@@ -1,32 +1,12 @@
 import axios from 'axios';
 import getConfig from 'next/config';
-import { fromUrl, parseDomain, ParseResultType } from 'parse-domain';
-import { getBaseUrl } from '../../lib/request';
-const UrlUtilities = (() => {
-  const getDomainFromUrl = (url) => {
-    const baseDomainParsed = parseDomain(fromUrl(url));
-    if (baseDomainParsed.type === ParseResultType.Listed) {
-      return baseDomainParsed.domain + '.' + baseDomainParsed.topLevelDomains.join('.');
-    } else if (baseDomainParsed.type === ParseResultType.Ip) {
-      return baseDomainParsed.hostname;
-    }else if (baseDomainParsed.type === ParseResultType.Reserved) {
-      if (baseDomainParsed.hostname === 'localhost') {
-        return 'localhost';
-      }
-      throw new Error('The only allowed reserved domain type is localhost, got ' + baseDomainParsed.hostname);
-    } else {
-      throw new Error('Unsupported domain type: ' + baseDomainParsed.type);
-    }
-  }
-  const baseWithDomainAndTld = getDomainFromUrl(getBaseUrl()).toLowerCase();
+import {isSafe, targetUrl} from '../../lib/backendProxy.cjs';
 
-  return {
-    isSafe: (rawUrl) => {
-      const parsedWithDomainAndTld = getDomainFromUrl(rawUrl).toLowerCase();
-      return parsedWithDomainAndTld === baseWithDomainAndTld;
-    },
-  }
-})();
+const UrlUtilities = {
+  isSafe: raw => isSafe(raw, getConfig().publicRuntimeConfig.backend.baseUrl),
+};
+const hopHeaders = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate',
+  'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'content-length', 'accept-encoding']);
 
 const actualHandler = async (req, res) => {
   const fullUrl = req.query.url;
@@ -35,7 +15,7 @@ const actualHandler = async (req, res) => {
   const isUrlSafe = UrlUtilities.isSafe(fullUrl);// typeof fullUrl === 'string' && fullUrl.toLowerCase().startsWith(getBaseUrl())
 
   if (getConfig().publicRuntimeConfig.backend.proxyEnabled !== true || !isUrlSafe) {
-    return res.status(500).json({
+    return res.status(400).json({
       success: false,
     });
   }
@@ -45,45 +25,32 @@ const actualHandler = async (req, res) => {
       'x-csrf-token': req.headers['x-csrf-token'] || '',
       'user-agent': req.headers['user-agent'],
     }
+    for (const key in req.headers) {
+      if (!hopHeaders.has(key.toLowerCase()) && key.toLowerCase() !== 'authorization') {
+        requestHeaders[key] = req.headers[key];
+      }
+    }
     const authHeaderValue = getConfig().serverRuntimeConfig.backend.authorization;
     if (typeof authHeaderValue === 'string')
       requestHeaders[getConfig().serverRuntimeConfig.backend.authorizationHeader || 'authorization'] = authHeaderValue;
-
-    // TODO: whitelisted headers might be safer...
-    for (const key in req.headers) {
-      if (key === 'host' || key === 'connection' || key === 'accept-encoding' || key === 'host') {
-        continue;
-      }
-      requestHeaders[key] = req.headers[key];
-    }
     const result = await axios.request({
       method: req.method,
-      url: fullUrl,
+      url: targetUrl(fullUrl, getConfig()),
       data: req.body,
       maxRedirects: 0,
       headers: requestHeaders,
       validateStatus: () => true,
     });
     for (const item of Object.getOwnPropertyNames(result.headers)) {
-      let value = result.headers[item];
-      if (item === 'set-cookie') {
-        // TODO: "localhost" needs to be configurable
-        if (typeof value === 'string') {
-          value = value.replace(/roblox\.com/g, 'localhost');
-        } else {
-          value.forEach((v, i, arr) => {
-            arr[i] = v.replace(/roblox\.com/g, 'localhost');
-          });
-        }
-      }
-      res.setHeader(item, value);
+      if (!hopHeaders.has(item.toLowerCase())) res.setHeader(item, result.headers[item]);
     }
     res.status(result.status);
     res.send(result.data);
     res.end();
   } catch (e) {
-    console.error(e);
-    res.status(500).json({
+    // Axios errors include request cookies and authorization; never log them.
+    console.error('Backend proxy request failed:', e.code || 'unknown');
+    res.status(502).json({
       success: false
     })
     res.end();

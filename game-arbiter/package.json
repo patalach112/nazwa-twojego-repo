@@ -1,0 +1,13 @@
+{
+  "name": "game-arbiter",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Process manager for the website's ArbiterHttpClient contract",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  }
+}

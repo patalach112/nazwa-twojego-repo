@@ -1,0 +1,12 @@
+{
+    "//": "Copy to config.json, or run ../scripts/setup.sh from the repo root. Secrets must match the website. rcc and content are directories and need trailing slashes.",
+    "authorization": "change-me",
+    "websiteBotAuth": "change-me",
+    "baseUrl": "http://localhost:5000",
+    "rccPort": 64989,
+    "port": 3041,
+    "thumbnailWebsocketPort": 3040,
+    "rcc": "../RCCService/",
+    "content": "../RCCService/content/",
+    "dockerDisabled": true
+}

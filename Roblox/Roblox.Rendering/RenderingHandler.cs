@@ -13,7 +13,10 @@ namespace Roblox.Rendering
     public class RenderingHandler
     {
         private static Random RandomComponent = new Random();
-        private static HttpClient client = new HttpClient();
+        private static readonly HttpClient client = new() { Timeout = TimeSpan.FromSeconds(10) };
+        private static Uri? renderBaseUrl;
+        private static string? renderAuthorization;
+        public static bool IsConfigured => renderBaseUrl != null;
         // TODO: REWRITE RENDERING HANDLER
         private enum RenderType
         {
@@ -41,13 +44,27 @@ namespace Roblox.Rendering
             public string? message { get; set; }
             public string? data { get; set; }
         }
-        public static void Configure()
+        public static void Configure(string? baseUrl = null, string? authorization = null)
         {
-
+            if (string.IsNullOrWhiteSpace(baseUrl))
+            {
+                renderBaseUrl = null;
+                renderAuthorization = null;
+                return;
+            }
+            if (!Uri.TryCreate(baseUrl.TrimEnd('/') + "/", UriKind.Absolute, out var parsed)
+                || (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps)
+                || !string.IsNullOrEmpty(parsed.UserInfo) || !string.IsNullOrEmpty(parsed.Query)
+                || !string.IsNullOrEmpty(parsed.Fragment))
+                throw new ArgumentException("Render:BaseUrl must be an HTTP(S) URL without credentials, query or fragment");
+            renderBaseUrl = parsed;
+            renderAuthorization = authorization;
         }
         public static Dictionary<long, string> allowedPlaceForRender = new Dictionary<long, string>();
         private static async Task<dynamic> SendRenderRequest(long id, RenderType type, int? x = 0, int? y = 0, bool? isFace = false, string? assetUrl = null, string? characterAppearanceUrl = null, string? animationUrl = null)
         {
+            var baseUrl = renderBaseUrl ?? throw new InvalidOperationException(
+                "Rendering is disabled. Configure Render:BaseUrl for your own renderer.");
             Stopwatch sw = new Stopwatch();
             sw.Start();
             string url = "";
@@ -128,8 +145,14 @@ namespace Roblox.Rendering
                     break;
             }
             // i will add error handling to this later
-            var content = new StringContent(JsonSerializer.Serialize(renderRequest), Encoding.UTF8, "application/json");
-            HttpResponseMessage response = await client.PostAsync("http://176.100.36.98:7832/" + url, content);
+            using var message = new HttpRequestMessage(HttpMethod.Post, new Uri(baseUrl, url))
+            {
+                Content = new StringContent(JsonSerializer.Serialize(renderRequest), Encoding.UTF8, "application/json"),
+            };
+            if (!string.IsNullOrEmpty(renderAuthorization))
+                message.Headers.TryAddWithoutValidation("Authorization", renderAuthorization);
+            using var response = await client.SendAsync(message);
+            response.EnsureSuccessStatusCode();
             sw.Stop();
             var request = await response.Content.ReadFromJsonAsync<RenderResponse>();
             Console.WriteLine($"[RenderingHandler] Request took {sw.ElapsedMilliseconds}ms");

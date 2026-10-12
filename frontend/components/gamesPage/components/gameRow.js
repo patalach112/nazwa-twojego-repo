@@ -19,19 +19,19 @@ export const useStyles = createUseStyles({
     display: 'flex',
     //alignContent: 'center',
     width: 'calc(100% - 53px - 53px)!important',
-    clipPath: 'inset(-10px -15px -90px -10px)',
     padding: '0 6px',
     flexWrap: 'nowrap',
-    overflow: 'visible',
+    overflow: 'hidden',
+    minWidth: 0,
     //overflowX: 'hidden',
-    marginLeft: '-4px',
+    marginLeft: 0,
     '@media(max-width: 994px)': {
-      overflow: 'scroll',
+      overflowX: 'auto',
       overflowY: 'hidden',
       width: '100%!important',
     },
     //height: '295px',
-    '&>div': {
+    '&>li': {
       flex: '0 0 auto',
     }
   },
@@ -97,7 +97,7 @@ export const useStyles = createUseStyles({
     //width: 'calc(75% - 10px)',
     width: '65.75%',
     '@media(max-width: 994px)': {
-      width: '100%',
+      width: 'calc(100% - 12px)',
       marginLeft: '6px',
     },
     '& h3': {
@@ -140,6 +140,7 @@ export const useStyles = createUseStyles({
     },
   },
   sort: {
+    position: 'relative',
     '@media(max-width: 994px)': {
       paddingRight: 0,
     },
@@ -176,7 +177,7 @@ const GameRow = props => {
     let windowWidth = rowRef.current.clientWidth;
     // breakpoints: 992, 1300 for side nav
     let offsetNotRounded = (windowWidth - 80) / 170;
-    let newLimit = Math.floor(offsetNotRounded);
+    let newLimit = Math.max(1, Math.floor(offsetNotRounded));
 
     setLimit(newLimit);
     if (offsetNotRounded !== newLimit) {
@@ -196,8 +197,7 @@ const GameRow = props => {
   });
   if (!props.games) return null;
 
-  const remainingGames = props.games.length - (offset - offsetComp);
-  const showForward = remainingGames >= limit;
+  const showForward = props.games.length - offset > limit;
   return <div className={`${s.sort} row`}>
     {/*<div className='col-12'>
       <h3 className={s.title}>{props.title.toUpperCase()}</h3>
@@ -216,7 +216,7 @@ const GameRow = props => {
       <div className={s.goBack + ' ' + s.pagerButton + ' ' + (offset === 0 ? 'opacity-25' : '')} onClick={() => {
         if (offset === 0)
           return;
-        setOffset(offset - limit);
+        setOffset(Math.max(0, offset - limit));
       }} style={{ height: rowHeight }}>
         <p className={s.pagerCaret}><span className={s.caretRight}>^</span></p>
       </div>
@@ -241,7 +241,7 @@ const GameRow = props => {
         }
       </div>
       {showForward ? <div className={`${s.goForward} ${s.pagerButton}`} onClick={() => {
-        let newOffset = ((offset) + (limit));
+        let newOffset = Math.min(offset + limit, Math.max(0, props.games.length - limit));
         setOffset(newOffset);
       }} style={{ height: rowHeight }}>
         <p className={s.pagerCaret}><span className={s.caretLeft}>^</span></p>

@@ -32,6 +32,8 @@ public static class Configuration
     public static string AdminBundleDirectory { get; set; }
     public static string LuaScriptsDirectory { get; set; }
     public static string EconomyChatBundleDirectory { get; set; }
+    public static string FrontendBaseUrl { get; set; } = "http://localhost:3000";
+    public static bool LocalRegistrationEnabled { get; set; }
     public static string BaseUrl { get; set; }
     public static string ShortBaseUrl { get; set; }
     public static string HCaptchaPublicKey { get; set; }
@@ -60,8 +62,8 @@ public static class Configuration
     public static string BotAuthorization { get; set; }
     public static string RccAuthorization { get; set; }
     public static string ArbiterAuthorization { get; set; }
+    public static string ArbiterBaseUrl { get; set; } = "http://127.0.0.1:4310/";
     public static string GameServerIp { get; set; }
-    public static string UserAgentBypassSecret { get; set; }
     public static string VerificationSecret { get; set; }
     public static long PackageShirtAssetId { get; set; }
     public static long PackagePantsAssetId { get; set; }

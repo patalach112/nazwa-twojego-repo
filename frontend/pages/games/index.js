@@ -10,7 +10,7 @@ const GamesPage = props => {
   </Theme2016>
 }
 
-export const getStaticProps = () => {
+export const getServerSideProps = async () => {
   return {
     props: {
       title: 'Games - Marine',

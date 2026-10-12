@@ -9,6 +9,7 @@ import { getQueryParams } from "../../lib/getQueryParams";
 import GamesList from './components/games';
 
 const useStyles = createUseStyles({
+  page: {margin: 0},
   authContainer: {
     '@media(min-width: 1300px)': {
       marginLeft: '180px',
@@ -75,7 +76,7 @@ const Games = props => {
   }, [store.genreFilter, query.sortFilter, query.keyword]);
 
   // if (!store.sorts || !store.games || !store.icons) return null;
-  return <div className={'row ' + (auth.isAuthenticated ? s.authContainer : '')}>
+  return <div className={s.page + ' row ' + (auth.isAuthenticated ? s.authContainer : '')}>
     {/*<div className='col-12'>
       <AdBanner context='gamesPage' />
     </div>*/}

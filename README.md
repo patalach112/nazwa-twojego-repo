@@ -8,7 +8,7 @@
 <div align="center">
 
 [![Go](https://img.shields.io/badge/GoLang-blue?logo=go)](https://github.com/tooblewtf/bloxd)
-[![Dotnet 6](https://img.shields.io/badge/.NET-6.0.0-purple?logo=dotnet)](https://github.com/tooble.wtf/bloxd)
+[![Dotnet 8](https://img.shields.io/badge/.NET-8.0-purple?logo=dotnet)](https://github.com/tooble.wtf/bloxd)
 [![Node.js](https://img.shields.io/badge/Node.JS-24.3.0-green?logo=nodedotjs)](https://github.com/tooblewtf/bloxd)
 [![trklzz](https://img.shields.io/badge/LEAKED_BY-tooble/trklzz-red?logo=github)](https://github.com/tooblewtf)
 
@@ -48,10 +48,10 @@ Old guides (including older versions of this file) tell you to look inside a `se
 
 ```
 repo root/
-├── scripts/                  # setup.sh (writes all the configs) and dev.sh (runs the dev stack)
+├── scripts/                  # setup.sh (writes local configs) and dev.sh (runs the dev stack)
 ├── docker-compose.yml        # postgres + redis for local development
 ├── api/                      # legacy api: knex migrations + public/ (css, js, img, admin bundle target)
-├── Roblox/                   # .NET 6 solution - the real website + api
+├── Roblox/                   # .NET 8 solution - the real website + api
 │   ├── Roblox.Website/       # main website/api (dotnet run here)
 │   ├── Roblox.Services/      # business logic
 │   ├── Roblox.Libraries/     # Json/, Templates/, StudioScripts/ (config points here)
@@ -59,16 +59,145 @@ repo root/
 ├── admin/                    # svelte admin panel (built into admin/public/)
 ├── frontend/                 # 2016-roblox frontend (Next.js)
 ├── AssetValidationServiceV2/ # Go service for validating uploaded assets (:4300)
-├── game-server/              # rcc manager for game servers
+├── game-arbiter/             # authenticated RCC process manager (:4310)
+├── game-server/              # legacy rcc manager for game servers
 ├── game-renderer/            # rendering service
-└── RCCService/               # RCC binaries + content
+└── RCCService/               # Windows RCC binaries + content
 ```
+
+# WHAT IS STILL MISSING
+
+The web stack and the game stack are not the same thing. Generating configs or
+getting a green build does **not** make this source a working revival.
+
+1. **There is no Linux RCC binary.** `RCCService/RCCService.exe` is Windows-only.
+   `game-server/docker/rccservice.dockerfile` copies a `rcc-docker/` directory
+   that is not in the repo. On Debian, Docker alone cannot supply that missing
+   runtime. A new [experimental Wine image](docker/rcc-wine/README.md) can test
+   the bundled Windows executables on an amd64 Linux Docker host. Read the
+   per-build SOAP/Lua compatibility report; merely building the image does not
+   prove it works. A compatible Linux RCC build or Windows host remains an
+   alternative. Real place startup and client joins are still unverified.
+2. **The arbiter needs a real game launcher.** This repo now includes
+   `game-arbiter/`, replacing the omission described in `Notes.md`. It manages
+   processes and the website's start/kill/eviction contract, but the example
+   `rccCommand` only starts RCC's SOAP listener. Configure a launcher that opens
+   the RCC job with the right Lua script and handles the requested network and
+   proxy ports. A successful spawn is not a ready game. See
+   [`game-arbiter/README.md`](game-arbiter/README.md).
+3. **The source includes original private keys.** Treat the PEM files in
+   `Roblox/Roblox.Website/Keys/` as compromised. They have not been changed by
+   these setup fixes; do not reuse them for a public deployment. Configs,
+   renderer wiring and client signing need a separate review before hosting.
+
+# GAME SERVER REPORTING
+
+The website now handles the callbacks used by the supplied Lua and legacy
+`game-server`. Every route is a JSON POST and independently checks the body
+`authorization` against `GameServerAuthorization`; Roblox headers, cookies and
+arbiter credentials cannot authorize it. `serverId` is a nonempty UUID. Numeric
+IDs may be numbers or the decimal strings emitted by Lua.
+
+| Route | Other fields | Effect |
+| --- | --- | --- |
+| `/gs/players/report` | `placeId`, `userId`, `eventType` (`Join` or `Leave`) | Update one active membership, job-linked play history, visits and rewards |
+| `/gs/ping` | `placeId`, optional nonnegative `ping` / `fps` | Mark this job ready and refresh its heartbeat; fractional statistics are rounded |
+| `/gs/activity` | none | Return `isAlive` and `updatedAt` (null for an unknown job) |
+| `/gs/shutdown` | `placeId` | Remove this job and close its remaining sessions |
+| `/gs/delete` | none | The same cleanup, used by the legacy process manager |
+
+A ready heartbeat expires after five minutes. Reports cannot modify a different
+place. Concurrent duplicate joins/leaves do not create duplicate visits or
+payments; a late Leave or deletion from a former job does not clear a newer
+session in the same place. Shutdown/delete are idempotent **notifications**, not
+a recursive call into the process that is reporting its own shutdown.
+
+Launches now commit a Loading job and reserve the host's network, SOAP and proxy
+ports **before** contacting the arbiter. Retried joins reuse the pending job, and
+ready joins keep the same proxy port. A rejected start is cleaned up only after
+the arbiter confirms termination; an uncertain kill leaves a Closing reservation
+that cannot be revived by a heartbeat and can be retried safely. The launcher
+regressions use a substitute HTTP handler plus real Postgres/Redis, not RCC.
+
+Run all database migrations before enabling reports. The new reporting migration
+refuses duplicate jobs, multiple active memberships for one user and orphan
+memberships instead of silently throwing data away. Reconcile any reported
+legacy conflicts before rerunning it.
+
+## Reporting regression tests
+
+Use an empty database whose name ends in `_tests` and a **separate Redis
+instance**, not the development Redis. These commands never read or overwrite
+`api/config.json`:
+
+```bash
+export TEST_DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/pekora_reporting_tests'
+export GAME_SERVER_TEST_POSTGRES='Host=127.0.0.1;Port=5432;Database=pekora_reporting_tests;Username=postgres;Password=postgres'
+export GAME_SERVER_TEST_REDIS='127.0.0.1:6380'
+(cd api && npm install && npm run test:migrations)
+dotnet test Roblox/Roblox.GameServer.Test/Roblox.GameServer.Test.csproj --configuration Release
+```
+
+The **Game server reports** CI job provisions disposable Postgres/Redis services,
+checks the complete migration chain and rollback, then runs HTTP/lifecycle tests
+with real database and cache operations. The focused ASP.NET TestHost includes
+the frontend proxy routing and verifies public requests without browser gates,
+while account, staff and game-server authorization remain enforced. Synthetic-key tests also
+verify legacy/2048-bit signatures, portable key paths and the configured JWT keys;
+they do not read the original leaked private keys. A separate Linux smoke test
+boots the complete website with isolated generated configs, exercises signing-key
+setup and checks authorized/unauthorized `/gs/activity` through the real middleware
+pipeline. It also checks captcha-free local login reaches normal credential
+validation while the Razor antiforgery token remains. It does not start the
+frontend, validator or RCC, or prove that a real client can join. Original signing keys remain compromised despite the portable
+loader fix.
+
+# FRONTEND VISUAL CHECKS
+
+The browser review now covers the anonymous entry page, Games, Catalog and a
+sample member dashboard at 1440, 390 and 320 pixels, in both development and
+production. It reproduced and fixed a white development page, the empty public
+root, obsolete login navigation, clipped mobile controls, page-wide carousel
+overflow, broken thumbnail placeholders and image probes, missing fonts, and
+an incorrectly cross-origin dashboard feed. The existing design is preserved.
+
+Run `npm run test:browser` in `frontend/`; the [visual testing guide](frontend/docs/visual-testing.md)
+explains Chromium installation, isolated fixtures, screenshots and the limits
+of these checks. A real browser rendering sample data is **not** a full-backend
+login test, an avatar render or a game join. The Razor login's visual layout and
+successful authentication still need their own end-to-end check.
+
+# HTTP ACCESS WITHOUT THE LEGACY GATES
+
+The old `ApplicationGuardMiddleware` and global `CsrfMiddleware` have been
+removed. Public requests no longer require a special user agent, an application
+authorization header, a user-agent bypass cookie or the legacy `x-csrf-token`
+handshake. Old `/auth/captcha` links redirect to `/` instead of presenting a
+browser challenge. The retired bypass secret is no longer generated or read;
+extra keys in existing private configs can remain without affecting startup.
+
+Session validation, password checks, staff permissions and the independently
+authenticated game-server/bot/RCC endpoints are **not** removed. Razor forms retain
+their framework antiforgery tokens. Form captcha is optional as described below.
+
+Local form captcha is disabled in fresh configs with `HCaptcha:Enabled: false`.
+Login, application, reset and support forms do not load a Cloudflare widget or
+require a provider response in this mode. Password verification, 2FA, account
+status and rate limits remain unchanged. Set `HCaptcha:Enabled` to `true` with
+both provider keys to enable it. Older configs without this switch keep captcha
+on when both keys are present, and off when the local keys are empty.
+
+Removing the global CSRF check is an intentional security trade-off, not a
+security fix. Cookie-authenticated API writes are no longer protected by that
+middleware. Do not expose this configuration to a public deployment without a
+replacement CSRF/origin protection strategy. CORS alone is not a replacement.
 
 # HOW TO SETUP
 
 ## things you need
 
-- <a href="https://nodejs.org/dist/v18.16.1/node-v18.16.1-x64.msi">Node.js</a>, *to run the renderer/build panel*
+- <a href="https://nodejs.org/en/download">Node.js</a>, *for the frontend, admin and arbiter; Node 22 has been tested, the arbiter requires at least 18*
+- Python 3, *for `scripts/setup.sh` and its tests*
 - <a href="https://sbp.enterprisedb.com/getfile.jsp?fileid=1258627">PostgreSQL</a> *(or docker, see below)*
 - <a href="https://dotnet.microsoft.com/download/dotnet/8.0">**.NET 8 SDK**</a>, *to run the website - every project in here targets net8.0, .NET 6 will not build it*
 - <a href="https://go.dev/dl/">Go</a>, *for asset validation (any recent version works)*
@@ -76,25 +205,59 @@ repo root/
 
 ## requirements
 
-- at least Windows 10, Linux is untested as my server is a Windows machine. You should use Wine to run everything if you are using linux (or if running a Debian vps, you can use Proxmox and run a windows VM.)
-- a 10 character long domain that supports both HTTP and HTTPS
+- The web stack targets Linux, macOS and Windows. The bundled RCC files are Windows executables; Wine-in-Docker startup and legacy Lua smoke checks are documented [here](docker/rcc-wine/README.md). They are not verified game joins.
+- Local web development uses `localhost`; a domain and patched clients are separate deployment work.
 - knowledge on how things like this work (you should have at least some experience with websites and coding to be able to host this. it's really not hard to set up if you know what you're doing.)
 
 ## quick start (linux, macOS, WSL)
 
-The .NET website runs fine on linux, you only lose RCC (the game servers) unless you
-run those in docker - `game-server/docker` has a working setup for that.
+The .NET website and frontend do not need Wine. This starts the **web development
+stack**, not a playable game server. The Linux/Windows CI jobs compile the .NET
+solution; RCC startup and real game joins still need a compatible host.
 
 ```bash
-./scripts/setup.sh                          # creates every config file, pointed at your clone
+./scripts/setup.sh                          # local configs, pointed at your clone
 docker compose up -d                        # postgres + redis
 (cd api && npm i && npx knex migrate:latest) # database schema
 (cd frontend && npm i)                       # frontend deps
 ./scripts/dev.sh                             # website + validator + frontend, ctrl+c stops it
 ```
 
-`setup.sh` accepts `DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME REDIS BASE_URL` as env
-vars if your database is not the default localhost/pekora one.
+`setup.sh` accepts `DB_HOST DB_PORT DB_USER DB_PASSWORD DB_NAME REDIS BASE_URL
+ARBITER_BASE_URL` as env vars for **new** configs. It does not rewrite existing
+files. A fresh website gets distinct random service, web-authorization, RCC,
+verification secrets. The generated service configs receive the
+matching website values:
+
+| Service config | Website setting |
+| --- | --- |
+| `game-arbiter/config.json`: `authorization` | `ArbiterAuthorization` |
+| `game-server/config.json`: `authorization` | `GameServerAuthorization` |
+| `game-server/config.json`: `websiteBotAuth` | `BotAuthorization` |
+
+JWT keys are provisioned in the ignored, owner-readable
+`Roblox/Roblox.Website/local-secrets.json`. It supplies independent `Jwt:Sessions`
+and `Jwt:Games` keys without changing an older `appsettings.json`. The website
+loads this overlay and fails early with an actionable error if a key is missing,
+short or still an example. Rerun `./scripts/setup.sh` when upgrading an older
+checkout. Existing valid JWT keys are reused; conflicting keys are reported, not
+rotated, so rerunning setup does not log everyone out.
+
+Fresh frontend configs copy the website's `Authorization` only into
+`serverRuntimeConfig.backend.authorization` and use its `BaseUrl` for the public
+API URLs. No secret goes into `publicRuntimeConfig`. Existing frontend configs
+are preserved; if necessary, add the private backend authorization manually.
+Other example authentication secrets in an **existing** website config are not
+automatically replaced: review them before exposing the site publicly.
+
+If you ran the older setup script, `ArbiterAuthorization` may still be `change-me`.
+Set it to a private random secret in the existing `appsettings.json` before
+rerunning setup. Existing service configs with mismatching secrets are reported,
+not silently overwritten. Keep all real configs out of Git.
+
+Start the arbiter separately with `(cd game-arbiter && npm start)`; it has no npm
+dependencies. `dev.sh` intentionally only runs the web stack. Do not start the
+legacy game-server expecting it to supply the missing Linux RCC runtime.
 
 ## steps
 
@@ -129,6 +292,10 @@ vars if your database is not the default localhost/pekora one.
 
     - `Postgres` / `Redis` - your DB and Redis connection strings.
     - `BaseUrl` - `http://localhost:5000` for local dev.
+    - `ArbiterBaseUrl` - `http://127.0.0.1:4310/` for the local arbiter, or the URL of the machine running it.
+    - `ArbiterAuthorization`, `GameServerAuthorization`, `BotAuthorization` - private secrets, shared with the corresponding service configs (see the table above).
+    - `Jwt:Sessions`, `Jwt:Games` - independent persistent secrets of at least 32 characters. Run `python3 scripts/provision_website_secrets.py Roblox/Roblox.Website` from the repo root to provision missing keys without rewriting this config.
+    - `RccAuthorization`, `VerificationSecret` - replace the example values with private secrets for a manual setup.
     - `OwnerUserId` - **an array**, e.g. `[ 12 ]`. Put your own user id in it after you register (see step 7).
     - `Directories` - **every value must end with a trailing slash**. Pre-filled in the example: `Public` → `api/public/`, `AdminBundle` → `admin/public/`, `XmlTemplates` → `Roblox/Roblox.Libraries/Templates/`, `JsonData` → `Roblox/Roblox.Libraries/Json/`, `ScriptsData` → `Roblox/Roblox.Libraries/StudioScripts/`. The asset/storage/thumbnail/group-icon folders are your own runtime data dirs - create them.
 
@@ -161,19 +328,13 @@ vars if your database is not the default localhost/pekora one.
     npm run dev
     ```
 
-    Then in the generated `config.json` change the:
+    The generator already points `baseUrl` at `http://localhost:5000` and
+    `apiFormat` at `http://localhost:5000/apisite/{0}{1}`. Keep them on the same
+    domain if you change either value. The frontend runs on `http://localhost:3000`.
 
-    ```
-    https://{0}.roblox.com{1}
-    ```
-
-    API format to:
-
-    ```
-    http://localhost:5000/apisite/{0}{1}
-    ```
-
-    The frontend runs on `http://localhost:3000`.
+    Also run `npm run build` before deploying. `next dev` skips the production
+    type check; TypeScript 4.9 needs the pinned Node 16 declarations, not the
+    latest `@types/node` pulled in by Jest.
 
 7. Register an account, then copy your user id and replace the `12` in `"OwnerUserId"` (inside `appsettings.json`) with your user id - keeping it an **array**, e.g. `[ 123 ]`. `ctrl+c` the `dotnet run` command to close it, then run it again to start the site back up. You should now be able to go to:
 
@@ -193,7 +354,42 @@ vars if your database is not the default localhost/pekora one.
 
 ## quick start on Windows
 
-`start.bat` fires up the frontend, asset validation, the website, game-server and RCCService in separate windows. **Note:** `game-server` needs edits before it actually works as a game/render service, and this source does **not** include `game-arbiter` (see `Notes.md`) - you have to write one yourself or game servers will not work.
+`start.bat` starts the legacy components in separate windows; it does not start the new arbiter. Generate or copy the configs first, then run `npm start` from `game-arbiter/` separately. The Windows RCC binaries do not supply the unfinished game launcher. See **WHAT IS STILL MISSING** above.
+
+## real local frontend and backend in Docker
+
+For a coordinated Debian setup with actual accounts rather than visual fixtures:
+
+```bash
+./scripts/local-stack.sh
+```
+
+This builds/runs the website, frontend, migrations, PostgreSQL and Redis with
+separate persistent private configs. Both `http://localhost:3000/` and
+`http://localhost:5000/` serve the real website once healthy. Local signup/login
+use the existing Razor forms. See `docker/local-stack/README.md` for requirements,
+health checks, configuration preservation, backups and isolated browser tests.
+RCC/client joins and rendering are not supplied by this website-only stack.
+
+## local accounts without Discord
+
+New local configs enable `LocalRegistrationEnabled`. `/auth/signup` creates a
+real username/password account without a Discord application or invitation;
+`/auth/application` redirects to that form in this mode. IP cooldowns,
+username/password validation, account status, staff checks and Razor antiforgery
+remain. Password recovery needs its own configuration, so save your password.
+Local signup does not create a starter place, contact a renderer or enable games.
+
+Missing or false `LocalRegistrationEnabled` preserves the original application
+approval requirement. Existing configs are never automatically changed. Session
+cookies remain HttpOnly and Secure on HTTPS deployments; explicit HTTP local
+setups can send their cookies without relying on browser localhost exceptions.
+Use HTTPS before making a deployment public.
+
+Avatar rendering is optional and disabled without `Render:BaseUrl`. Configure
+an owned renderer and, if required, `Render:Authorization`; the original
+hard-coded third-party renderer address is no longer contacted. Disabled
+rendering leaves pending thumbnails, not proof of a working avatar renderer.
 
 ## common gotchas
 
@@ -203,5 +399,5 @@ vars if your database is not the default localhost/pekora one.
 - **Everything is case sensitive on linux.** The css folder in the repo is `api/public/css/Roblox`, and the code used to ask for `css/roblox` - that only ever worked because windows does not care.
 - **Build the admin at least once** (`cd admin && npm i && npm run build`). `/admin/` reads `admin/public/build/bundle.js`, which does not exist until you build it.
 - **`api/` is legacy** (`api/README.MD`): it is only used for its `public/` folder and migrations. The actual API is the .NET project in `Roblox/Roblox.Website/`.
-- **`game-server/README.md` says "THIS IS OUTDATED, DO NOT USE".** Treat game-server/game-renderer as a starting point, not a finished service. RCC is a windows binary - on linux you have to run it in docker (`game-server/docker`).
-- **There is no game-arbiter in here** (`Notes.md`), you have to write one or players will not be able to join anything.
+- **`game-server/README.md` says "THIS IS OUTDATED, DO NOT USE".** Treat game-server/game-renderer as a starting point, not a finished service. Its `config.example.json` is a configuration reference, not proof that the game/render stack works.
+- **`Notes.md` describes the original omission.** `game-arbiter/` is now supplied, but requires a compatible RCC launcher. The generated command points at a Windows executable; Docker cannot replace binaries that are not in the repo.

@@ -101,12 +101,12 @@ const setFontStyle = (fontString) => {
 }
 
 const getLogoStyle = () => {
-    if (!isLocalStorageAvailable) return fontStyle.Default;
+    if (!isLocalStorageAvailable) return logoStyle.Default;
 
     let value = localStorage.getItem('rbx_logo_style_v1');
-    // validate
-    if (typeof value !== 'string' || !Object.values(fontStyle).includes(value)) 
-        return fontStyle.Default;
+    // Validate against logos, not the unrelated font choices.
+    if (typeof value !== 'string' || !Object.values(logoStyle).includes(value))
+        return logoStyle.Default;
     return value;
 }
 

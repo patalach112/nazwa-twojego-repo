@@ -15,11 +15,20 @@ var domain = AppDomain.CurrentDomain;
 // Set a timeout interval of 5 seconds.
 domain.SetData("REGEX_DEFAULT_MATCH_TIMEOUT", TimeSpan.FromSeconds(5));
 
+// Source runs use the website folder; published runs may start from elsewhere.
+// Resolve one content root for config, Razor and signing files instead of letting
+// ConfigurationBuilder silently look in the binary folder while the host does not.
+var contentRoot = Directory.GetCurrentDirectory();
+if (!File.Exists(Path.Combine(contentRoot, "appsettings.json")) && File.Exists(Path.Combine(AppContext.BaseDirectory, "appsettings.json")))
+    contentRoot = AppContext.BaseDirectory;
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions { Args = args, ContentRootPath = contentRoot });
 IConfiguration configuration = new ConfigurationBuilder()
+    .SetBasePath(builder.Environment.ContentRootPath)
     .AddJsonFile("appsettings.json")
+    .AddJsonFile("local-secrets.json", optional: true)
     .Build();
-
-var builder = WebApplication.CreateBuilder(args);
+var gameJwtKey = Roblox.Website.Lib.ConfigurationSecrets.Require(configuration, "Jwt:Games");
+var sessionJwtKey = Roblox.Website.Lib.ConfigurationSecrets.Require(configuration, "Jwt:Sessions");
 
 // DB
 Roblox.Services.Database.Configure(configuration.GetSection("Postgres").Value!);
@@ -38,9 +47,12 @@ Roblox.Configuration.ScriptDirectory = configuration.GetSection("Directories:Scr
 Roblox.Configuration.AdminBundleDirectory = configuration.GetSection("Directories:AdminBundle").Value!;
 Roblox.Configuration.EconomyChatBundleDirectory = configuration.GetSection("Directories:EconomyChatBundle").Value!;
 Roblox.Configuration.BaseUrl = configuration.GetSection("BaseUrl").Value!;
+Roblox.Configuration.FrontendBaseUrl = configuration["FrontendBaseUrl"] ?? "http://localhost:3000";
+Roblox.Website.Lib.FrontendProxyTarget.ParseBaseUrl(Roblox.Configuration.FrontendBaseUrl);
+Roblox.Configuration.LocalRegistrationEnabled = configuration.GetValue<bool>("LocalRegistrationEnabled");
 Roblox.Configuration.ShortBaseUrl = Roblox.Configuration.BaseUrl!.Replace("https://www.", "");
-Roblox.Configuration.HCaptchaPublicKey = configuration.GetSection("HCaptcha:Public").Value!;
-Roblox.Configuration.HCaptchaPrivateKey = configuration.GetSection("HCaptcha:Private").Value!;
+Roblox.Libraries.Captcha.HCaptcha.Configure(configuration.GetValue<bool?>("HCaptcha:Enabled"),
+    configuration["HCaptcha:Public"], configuration["HCaptcha:Private"]);
 // Discord OAuth related Stuff
 Roblox.Configuration.DiscordClientId = configuration.GetSection("Discord:ClientId").Value!;
 Roblox.Configuration.DiscordClientSecret = configuration.GetSection("Discord:ClientSecret").Value!;
@@ -54,8 +66,8 @@ Roblox.Configuration.GameServerAuthorization = configuration.GetSection("GameSer
 Roblox.Configuration.BotAuthorization = configuration.GetSection("BotAuthorization").Value!;
 Roblox.Configuration.RccAuthorization = configuration.GetSection("RccAuthorization").Value!;
 Roblox.Configuration.ArbiterAuthorization = configuration.GetSection("ArbiterAuthorization").Value!;
+Roblox.Configuration.ArbiterBaseUrl = configuration.GetSection("ArbiterBaseUrl").Value ?? "http://127.0.0.1:4310/";
 Roblox.Configuration.GameServerIp = configuration.GetSection("GameServerIp").Value!;
-Roblox.Configuration.UserAgentBypassSecret = configuration.GetSection("UserAgentBypassSecret").Value!;
 Roblox.Configuration.VerificationSecret = configuration.GetSection("VerificationSecret").Value!;
 Roblox.Configuration.LuaScriptsDirectory = configuration.GetSection("Directories:RCCLuaScripts").Value!;
 
@@ -72,13 +84,13 @@ foreach (var requiredDirectory in new[]
 {
     Directory.CreateDirectory(requiredDirectory);
 }
-IConfiguration gameServerConfig = new ConfigurationBuilder().AddJsonFile("game-servers.json").Build();
+IConfiguration gameServerConfig = new ConfigurationBuilder().SetBasePath(builder.Environment.ContentRootPath).AddJsonFile("game-servers.json").Build();
 Roblox.Configuration.GameServerIpAddresses = gameServerConfig.GetSection("GameServers").Get<IEnumerable<GameServerConfigEntry>>()!;
 Roblox.Configuration.AssetValidationServiceUrl =
     configuration.GetSection("AssetValidation:BaseUrl").Value!;
 Roblox.Configuration.AssetValidationServiceAuthorization =
     configuration.GetSection("AssetValidation:Authorization").Value!;
-GameServerService.Configure(string.Join(Guid.NewGuid().ToString(), new int [16].Select(_ => Guid.NewGuid().ToString()))); // More TODO: If we every load balance, this will break
+GameServerService.Configure(gameJwtKey);
 Roblox.Configuration.PackageShirtAssetId = long.Parse(configuration.GetSection("PackageShirtAssetId").Value!);
 Roblox.Configuration.PackagePantsAssetId = long.Parse(configuration.GetSection("PackagePantsAssetId").Value!);
 Roblox.Libraries.TwitterApi.TwitterApi.Configure(configuration.GetSection("Twitter:Bearer").Value!);
@@ -92,10 +104,12 @@ Roblox.Configuration.RobloxAppPrefix = "rbxeconsimdev:";
 #endif
 FeatureFlags.StartUpdateFlagTask();
 var ownerUserIdConfig = configuration.GetSection("OwnerUserId");
-List<long> ownerUserIds = ownerUserIdConfig.Get<List<long>>()!;
-Roblox.Website.Filters.StaffFilter.Configure(ownerUserIds!);
+// Configuration binding returns null for an empty JSON array.
+var ownerUserIds = ownerUserIdConfig.Get<List<long>>() ?? new List<long>();
+Roblox.Website.Filters.StaffFilter.Configure(ownerUserIds);
 //Roblox.Website.Controllers.ThumbnailsControllerV1.StartThumbnailFixLoop();
 
+builder.Services.AddScoped<GameServerService>();
 builder.Services.AddRazorPages();
 builder.Services.AddRequestDecompression();
 builder.Services.AddControllers(options =>
@@ -208,10 +222,8 @@ app.UseMiddleware<ThumbnailMiddleware>(Roblox.Configuration.ThumbnailsDirectory)
 app.UseMiddleware<RobloxLoggingMiddleware>();
 app.UseRobloxPlayerCorsMiddleware(); // cors varies depending on authentication status, so it must be after session middleware
 
-app.UseRobloxCsrfMiddleware();
-app.UseApplicationGuardMiddleware();
-Roblox.Website.Middleware.ApplicationGuardMiddleware.Configure(configuration.GetSection("Authorization").Value!);
-Roblox.Website.Middleware.CsrfMiddleware.Configure(Guid.NewGuid().ToString() + Guid.NewGuid().ToString() + Guid.NewGuid().ToString()); // TODO: This would break if we ever load balance
+// Public routes do not require an application-guard cookie, a particular user
+// agent or the legacy global CSRF token. Sessions and endpoint permissions remain.
 
 app.UseSwagger();
 app.UseSwaggerUI();
@@ -224,10 +236,10 @@ app.UseExceptionHandler("/error");
 //await CommandHandler.Configure("ws://localhost:3189", "hello world of deving 1234");
 //CommandHandler.Configure(configuration.GetSection("Render:BaseUrl").Value, configuration.GetSection("Render:Authorization").Value); // will be removed soon
 
-RenderingHandler.Configure();
-SessionMiddleware.Configure(configuration.GetSection("Jwt:Sessions").Value!);
+RenderingHandler.Configure(configuration["Render:BaseUrl"], configuration["Render:Authorization"]);
+SessionMiddleware.Configure(sessionJwtKey);
 app.UseTimerMiddleware(); // Must always be last
-Roblox.Services.Signer.SignService.Setup();
+Roblox.Services.Signer.SignService.Setup(builder.Environment.ContentRootPath);
 _ = Task.Run(async () =>
 {
     using var assets = Roblox.Services.ServiceProvider.GetOrCreate<AssetsService>();

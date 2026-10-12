@@ -1,91 +1,42 @@
-import React from "react";
-import { createUseStyles } from "react-jss";
-import LoginModalStore from "../../../stores/loginModal";
-import LoginModal from "../../loginModal";
-import getFlag from "../../../lib/getFlag";
-import { useRouter } from "next/dist/client/router";
+import {createUseStyles} from 'react-jss';
 
-const useLoginAreaStyles = createUseStyles({
-  text: {
-    color: 'white',
-    fontWeight: 400,
-    fontSize: '16px',
-    borderBottom: 0,
-    margin: 0,
-    textAlign: 'right',
-    whiteSpace: 'nowrap',
+const useStyles = createUseStyles({
+  loginContainer: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: '8px',
+    width: 'auto',
+    marginLeft: 'auto',
+    marginRight: '12px',
+    padding: 0,
+    '@media(max-width: 991px)': {width: 'calc(60% - 18px)'},
+    '@media(max-width: 400px)': {width: 'calc(68% - 18px)'},
   },
   link: {
     color: 'white',
+    fontWeight: 400,
+    fontSize: '16px',
     textDecoration: 'none',
     padding: '6px 9px',
-    userSelect: 'none',
-    '&:hover': {
-      color: 'white',
-      background: 'rgba(25,25,25,0.1)',
-      cursor: 'pointer',
-      borderRadius: '4px',
-    },
+    whiteSpace: 'nowrap',
+    borderRadius: '3px',
+    '&:hover': {color: 'white', background: 'rgba(25,25,25,0.1)'},
   },
   signupLink: {
-    backgroundColor: '#02b757!important',
-    borderRadius: '3px!important',
-    '&:hover': {
-      backgroundColor: '#3fc679!important',
-      borderRadius: '3px!important',
-    }
-  },
-
-  loginContainer: {
-    maxWidth: '25%',
-    float: 'right',
-    marginLeft: 'auto',
-    marginRight: '12px',
-  },
-  buttonContainer: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: '100%',
+    backgroundColor: '#02b757',
+    '&:hover': {backgroundColor: '#3fc679'},
   },
 });
 
-const LoginArea = props => {
-  const Router = useRouter();
-  const s = useLoginAreaStyles();
-  const loginModalStore = LoginModalStore.useContainer();
-
-  return <div className={`row ${s.loginContainer}`}>
-    <div className='col-6 offset-6'>
-      <div className={`row ${s.buttonContainer}`}>
-        <div className='col-6'>
-          <p className={s.text}>
-            <a className={s.link} onClick={(e) => {
-              e.preventDefault();
-              if (getFlag('requireLoginThroughCookie', true)) {
-                if (getFlag('clientSideRenderingEnabled', false)) {
-                  Router.push('/login');
-                } else {
-                  window.location.href = '/login';
-                }
-                return;
-              }
-              loginModalStore.setOpen(!loginModalStore.open);
-            }}>
-              Login
-            </a>
-          </p>
-          {loginModalStore.open && <LoginModal></LoginModal>}
-        </div>
-        <div className='col-6'>
-          <p className={s.text}>
-            <a className={`${s.link} ${s.signupLink}`} href='/auth/application'>
-              Sign Up
-            </a>
-          </p>
-        </div>
-      </div>
-    </div>
-  </div>
-}
+const LoginArea = () => {
+  const s = useStyles();
+  // Account passwords and 2FA belong to the existing Razor login, not the
+  // retired cookie-import screen or the disabled /apisite/auth/v2/login route.
+  return <div className={s.loginContainer}>
+    <a className={s.link} href='/auth/accountlogin'>Login</a>
+    <a className={`${s.link} ${s.signupLink}`} href='/auth/signup'>Sign Up</a>
+  </div>;
+};
 
 export default LoginArea;

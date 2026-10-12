@@ -19,42 +19,42 @@ namespace Roblox.Services;
 
 
 
-public class GameServerService : ServiceBase
+public partial class GameServerService : ServiceBase
 {
     public class ArbiterHttpClient : HttpClient
     {
         
-        public ArbiterHttpClient()
+        public ArbiterHttpClient() : this(new HttpClientHandler()) { }
+
+        public ArbiterHttpClient(HttpMessageHandler handler) : base(handler)
         {
-            // BaseAddress should be the url to your game-arbiter host itself
-            // i don't really know why pekora's developers decided to hardcode this except for
-            // making a configuration on AppSettings.json (i gotta do that soon)
-            this.BaseAddress = new Uri($"http://gamearbiterserverhere.com/");
-            this.DefaultRequestHeaders.Add("PJX-ArbiterAUTH", Configuration.ArbiterAuthorization);
+            // Preserve a configured URL prefix when adding relative endpoint names.
+            BaseAddress = new Uri(Configuration.ArbiterBaseUrl.TrimEnd('/') + "/");
+            DefaultRequestHeaders.Add("PJX-ArbiterAUTH", Configuration.ArbiterAuthorization);
         }
-        public async Task<bool> StartGameServer(StartGameServerRequest request)
+
+        public async Task<bool> StartGameServer(StartGameServerRequest request, CancellationToken cancellationToken = default)
         {
-            var result = await this.PostAsync("start-game-server", new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json"));
-            return result.IsSuccessStatusCode;
+            using var content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            using var response = await PostAsync("start-game-server", content, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            return true;
         }
+
         public async Task<bool> EvictPlayer(EvictPlayerRequest request)
         {
-            /*
-                This is temporary because the JSON doesnt format well
-            */
-            var jsonRequest = $"{{ \"gameId\": \"{request.gameId}\", \"userId\": {request.userId}, \"messageVersionId\": {request.messageVersionId} }}";
-            var result = await this.PostAsync("evict-player", new StringContent(jsonRequest, Encoding.UTF8, "application/json"));
-            return result.IsSuccessStatusCode;
+            using var content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            using var response = await PostAsync("evict-player", content);
+            response.EnsureSuccessStatusCode();
+            return true;
         }
+
         public async Task<bool> KillGameServer(KillGameServerRequest request, CancellationToken cancellationToken)
         {
-            var content = new StringContent(
-                JsonSerializer.Serialize(request),
-                Encoding.UTF8,
-                "application/json");
-
-            var result = await this.PostAsync("kill-game-server", content, cancellationToken);
-            return result.IsSuccessStatusCode;
+            using var content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            using var response = await PostAsync("kill-game-server", content, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            return true;
         }
         public static EvictPlayerRequest CreateEvictPlayerRequest(Guid jobId, long userId)
         {
@@ -118,8 +118,11 @@ public class GameServerService : ServiceBase
 
     private const string ClientJoinTicketType = "GameJoinTicketV1.1";
     private const string ServerJoinTicketType = "GameServerTicketV2";
-    private static ArbiterHttpClient arbiterClient = new ArbiterHttpClient();
-    private static GamesService games = new GamesService();
+    private static readonly ArbiterHttpClient SharedArbiterClient = new();
+    private readonly ArbiterHttpClient arbiterClient;
+
+    public GameServerService() : this(SharedArbiterClient) { }
+    public GameServerService(ArbiterHttpClient arbiterClient) { this.arbiterClient = arbiterClient; }
     private static string jwtKey { get; set; } = string.Empty;
     private static EasyJwt jwt { get; } = new();
     private static Random RandomComponent = new Random();
@@ -133,7 +136,9 @@ public class GameServerService : ServiceBase
     public static Dictionary<string, int> unreadyGameServers = new Dictionary<string, int>(); // Process, network server port
     public static void Configure(string newJwtKey)
     {
-        jwtKey = "6EwhjPzM9Kf9pPRgYyCnhmM3v6j9d95vCg+NBeUThw49dcLLs1BvNnErFItWCEjS0e85QaYRcE38sTgkRg";
+        if (string.IsNullOrWhiteSpace(newJwtKey) || newJwtKey.Length < 32)
+            throw new ArgumentException("The game-ticket JWT key must contain at least 32 characters", nameof(newJwtKey));
+        jwtKey = newJwtKey;
     }
 
     private string HashIpAddress(string hashedIpAddress)
@@ -213,168 +218,6 @@ public class GameServerService : ServiceBase
         return value;
     }
 
-    public async Task OnPlayerJoin(long userId, long placeId, Guid serverId)
-    {
-        CurrentPlayersInGame.AddOrUpdate(userId, placeId, (key, oldValue) => placeId);
-        await db.ExecuteAsync(
-            "INSERT INTO asset_server_player (asset_id, user_id, server_id) VALUES (:asset_id, :user_id, :server_id::uuid)",
-            new
-            {
-                asset_id = placeId,
-                user_id = userId,
-                server_id = serverId,
-            });
-        await InsertAsync("asset_play_history", new
-        {
-            asset_id = placeId,
-            user_id = userId,
-        });
-        await db.ExecuteAsync("UPDATE asset_place SET visit_count = visit_count + 1 WHERE asset_id = :id", new
-        {
-            id = placeId,
-        });
-        // give ticket to creator
-        await InTransaction(async _ =>
-        {
-            using var assets = ServiceProvider.GetOrCreate<AssetsService>(this);
-            var placeDetails = await assets.GetAssetCatalogInfo(placeId);
-            using var ec = ServiceProvider.GetOrCreate<EconomyService>(this);
-            using var cooldown = ServiceProvider.GetOrCreate<CooldownService>(this);
-            // Per 100 users there is a 1 day cooldown to earn tickets from visits
-            if (await cooldown.TryIncrementBucketCooldown("TicketCreatorPlaceVisit:" + placeId, 100, TimeSpan.FromDays(1)))
-            {
-                if (placeDetails.creatorType == CreatorType.Group)
-                {
-                    await InsertAsync("user_transaction", new
-                    {
-                        amount = 10,
-                        currency_type = CurrencyType.Tickets,
-                        user_id_one = (long?)null,
-                        user_id_two = userId,
-                        group_id_one = placeDetails.creatorTargetId,
-                        type = PurchaseType.PlaceVisit,
-                        // store id of the game as well
-                        asset_id = placeId,
-                    });
-                }
-                else
-                {
-                    if (placeDetails.creatorTargetId == userId)
-                    {
-                        return 0;
-                    }
-                    await ec.IncrementCurrency(CreatorType.User, placeDetails.creatorTargetId, CurrencyType.Tickets, 10);
-                    await InsertAsync("user_transaction", new
-                    {
-                        amount = 10,
-                        currency_type = CurrencyType.Tickets,
-                        user_id_one = placeDetails.creatorTargetId,
-                        user_id_two = userId,
-                        type = PurchaseType.PlaceVisit,
-                        // store id of the game as well
-                        asset_id = placeId,
-                    });
-                    /* 
-                        Homestead = 6
-                        Bricksmith = 7
-                    */
-                    using var accountService = ServiceProvider.GetOrCreate<AccountInformationService>(this);
-                    var badges = await accountService.GetUserBadges(placeDetails.creatorTargetId);
-                    switch (await games.GetTotalVisitsFromUser(placeDetails.creatorTargetId))
-                    {
-                        case 100:
-                            if (badges.Any(b => b.id == 6))
-                            {
-                                return 0;
-                            }
-                            await db.ExecuteAsync("INSERT INTO user_badge (user_id, badge_id) VALUES (:user_id, :badge_id)", new
-                            {
-                                user_id = placeDetails.creatorTargetId,
-                                badge_id = 6,
-                            });
-                            break;
-                        case 1000:
-                            if (badges.Any(b => b.id == 7))
-                            {
-                                return 0;
-                            }
-                            await db.ExecuteAsync("INSERT INTO user_badge (user_id, badge_id) VALUES (:user_id, :badge_id)", new
-                            {
-                                user_id = placeDetails.creatorTargetId,
-                                badge_id = 7,
-                            });
-                            break;
-                        default:
-                            break;
-                    }
-                }
-            }
-
-
-            return 0;
-        });
-    }
-
-    public async Task OnPlayerLeave(long userId, long placeId, Guid serverId)
-    {
-        CurrentPlayersInGame.TryRemove(userId, out _);
-
-        await db.ExecuteAsync(
-            "DELETE FROM asset_server_player WHERE user_id = :user_id AND server_id = :server_id::uuid", new
-            {
-                server_id = serverId,
-                user_id = userId,
-            });
-        Console.WriteLine("deleted from db line 195 onplayerleave");
-        var latestSession = await db.QuerySingleOrDefaultAsync<AssetPlayEntry>(
-            "SELECT id, created_at as createdAt FROM asset_play_history WHERE user_id = :user_id AND asset_id = :asset_id AND ended_at IS NULL ORDER BY asset_play_history.id DESC LIMIT 1",
-            new
-            {
-                user_id = userId,
-                asset_id = placeId,
-            });
-        if (latestSession != null)
-        {
-            await db.ExecuteAsync("UPDATE asset_play_history SET ended_at = now() WHERE id = :id", new
-            {
-                id = latestSession.id,
-            });
-
-            if (latestSession.createdAt.Year != DateTime.UtcNow.Year) return;
-
-            var playTimeMinutes = (long)Math.Truncate((DateTime.UtcNow - latestSession.createdAt).TotalMinutes);
-            var earnedTickets = Math.Min(playTimeMinutes * 10, 60); // temp cap, might reduce in the future?
-            // cap is 10k tickets per 12 hours (about 1k robux)
-            const long maxEarningsPerPeriod = 10000;
-            using (var ec = ServiceProvider.GetOrCreate<EconomyService>(this))
-            {
-                var earningsToday =
-                    await ec.CountTransactionEarningsOfType(userId, PurchaseType.PlayingGame, null, TimeSpan.FromHours(12));
-
-                if (earningsToday >= maxEarningsPerPeriod)
-                    return;
-            }
-
-            await InTransaction(async _ =>
-            {
-                using var ec = ServiceProvider.GetOrCreate<EconomyService>(this);
-                await ec.IncrementCurrency(CreatorType.User, userId, CurrencyType.Tickets, earnedTickets);
-                await InsertAsync("user_transaction", new
-                {
-                    amount = earnedTickets,
-                    currency_type = CurrencyType.Tickets,
-                    user_id_one = userId,
-                    user_id_two = 1,
-                    type = PurchaseType.PlayingGame,
-                    // store id of the game they played as well
-                    asset_id = placeId,
-                });
-
-                return 0;
-            });
-        }
-    }
-
     // private async Task<T> PostToGameServer<T>(string ipAddress, string port, string methodName, List<dynamic>? args = null, CancellationToken? cancelToken = null)
     // {
     //     var jsonRequest = new
@@ -440,41 +283,6 @@ public class GameServerService : ServiceBase
     //         new List<dynamic> {placeId, gameServerId, gameServerPort});
     // }
 
-    public async Task ShutDownServerAsync(Guid serverId)
-    {
-        using var serverCreationLock = await Cache.redLock.CreateLockAsync($"CloseGameServer:{serverId.ToString()}", TimeSpan.FromSeconds(10));
-        if (!serverCreationLock.IsAcquired)
-        {
-            // Silence.
-            return;
-        }
-        try
-        {
-            Stopwatch stopwatch = new Stopwatch();
-            stopwatch.Start();
-
-            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15)))
-            {
-                await arbiterClient.KillGameServer(
-                    ArbiterHttpClient.CreateKillGameServerRequest(serverId),
-                    cts.Token);
-            }
-
-            Console.WriteLine($"Gameserver {serverId} was successfully closed in {stopwatch.ElapsedMilliseconds}ms!");
-
-            await DeleteGameServer(serverId);
-        }
-        catch (OperationCanceledException)
-        {
-            Console.Error.WriteLine($"KillGameServer timed out after 15 seconds for server {serverId}.");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Error shutting down server {serverId}: {ex}");
-        }
-    }
-
-
     public static void RemoveAllPlayersFromPlaceId(long placeId)
     {
         List<long> playersToRemove = CurrentPlayersInGame.Where(kvp => kvp.Value == placeId).Select(kvp => kvp.Key).ToList();
@@ -487,11 +295,7 @@ public class GameServerService : ServiceBase
 
     public static long GetUserPlaceId(long userId) // get user game is in
     {
-        bool isInGame = CurrentPlayersInGame.ContainsKey(userId);
-        if (!isInGame)
-            return 0;
-
-        return CurrentPlayersInGame[userId];
+        return CurrentPlayersInGame.TryGetValue(userId, out var placeId) ? placeId : 0;
     }
 
     public static long GetPlaceIdByJobId(string jobId)
@@ -538,22 +342,6 @@ public class GameServerService : ServiceBase
             id = serverId,
         });
     }
-    public async Task SetServerPing(Guid serverId)
-    {
-        await db.ExecuteAsync("UPDATE asset_server SET updated_at = :u, status = :stat WHERE id = :id::uuid", new
-        {
-            u = DateTime.UtcNow,
-            stat = ServerStatus.Ready,
-            id = serverId,
-        });
-    }
-
-    public async Task DeleteGameServer(Guid serverId)
-    {
-        await db.ExecuteAsync("DELETE FROM asset_server_player WHERE server_id = :id::uuid", new {id = serverId});
-        await db.ExecuteAsync("DELETE FROM asset_server WHERE id = :id::uuid", new {id = serverId});
-    }
-
     private static readonly IEnumerable<int> GameServerPorts = new []
     {
         // this must always stay in sync with nginx config file
@@ -757,7 +545,7 @@ public class GameServerService : ServiceBase
     public async Task<GameServerDb> GetGameServer(Guid jobId)
     {
         return await db.QueryFirstOrDefaultAsync<GameServerDb>(
-            "SELECT id, asset_id as assetId, port, updated_at as updatedAt, status, type FROM asset_server WHERE id = :id::uuid",
+            "SELECT id, asset_id as assetId, COALESCE(proxy_port, port) as port, updated_at as updatedAt, status, type FROM asset_server WHERE id = :id::uuid",
             new
             {
                 id = jobId,
@@ -767,7 +555,7 @@ public class GameServerService : ServiceBase
     public async Task<bool> IsPortTaken(int port)
     {
         int result = await db.QueryFirstOrDefaultAsync<int>(
-            "SELECT port FROM asset_server WHERE port = :gsport",
+            "SELECT port FROM asset_server WHERE port = :gsport OR rcc_port = :gsport OR proxy_port = :gsport",
             new
             {
                 gsport = port,
@@ -777,7 +565,7 @@ public class GameServerService : ServiceBase
     public async Task<IEnumerable<GameServerDb>> GetGameServersForPlace(long placeId, int? matchmaking = 1)
     {
         var result = await db.QueryAsync<GameServerDb>(
-            "SELECT id, asset_id as assetId, port, updated_at as updatedAt, status, type FROM asset_server WHERE asset_id = :assetid AND type = :type",
+            "SELECT id, asset_id as assetId, COALESCE(proxy_port, port) as port, updated_at as updatedAt, status, type FROM asset_server WHERE asset_id = :assetid AND type = :type",
             new
             {
                 assetid = placeId,
@@ -786,97 +574,6 @@ public class GameServerService : ServiceBase
         if (result == null)
             return new List<GameServerDb>();
         return result;
-    }
-
-    public async Task<GameServerGetOrCreateResponse> GetServerForPlace(PlaceEntry placeInfo, int matchmaking)
-    {
-        var gameServers = await GetGameServersForPlace(placeInfo.placeId, matchmaking);
-        foreach (var server in gameServers)
-        {
-            var currentPlayerCount = await GetGameServerPlayers(server.id);
-
-            // if the server is full continue the search for a good one
-            if (currentPlayerCount.Count() >= placeInfo.maxPlayerCount)
-            {
-                continue;
-            }
-            // if the server is older than 5 minutes then shutdown the server
-            if (server.updatedAt.AddMinutes(5) < DateTime.UtcNow)
-            {
-                await ShutDownServerAsync(server.id);
-                continue;
-            }
-
-            //dict check!!! if it doesnt contain it lets kill it!
-            //if (!currentGameServerPorts.ContainsKey(jobid))
-            //{
-                //_ = ShutDownServerAsync(jobid);
-                //continue;
-            //}
-
-            // we found a server to join or.... its loading depending
-            return new GameServerGetOrCreateResponse()
-            {
-                job = server.id,
-                ip = Configuration.GameServerIp,
-                port = server.port,
-                status = server.status == ServerStatus.Ready ? JoinStatus.Joining : JoinStatus.Loading
-            };
-            
-        }
-
-        int mainRCCPort = RandomComponent.Next(30000, 40000);
-        int networkServerPort =  RandomComponent.Next(50000, 60000);;
-        int proxyPort = 0;
-        do
-        {
-            proxyPort = RandomComponent.Next(7000, 8000);
-            if (!await IsPortTaken(proxyPort))
-                break;
-            
-        } while (true);
-
-        Guid jobId = Guid.NewGuid();
-        // We need to create a lock to prevent multiple requests from creating the same game server
-        using var serverCreationLock = await Cache.redLock.CreateLockAsync($"CreateGameServerV1:{placeInfo.placeId}", TimeSpan.FromSeconds(3));
-        if (!serverCreationLock.IsAcquired)
-        {
-            return new GameServerGetOrCreateResponse
-            {
-                status = JoinStatus.Loading,
-            };
-        }
-
-        _ = Task.Run(async () => await StartGameServer(placeInfo, mainRCCPort, networkServerPort, proxyPort, jobId, matchmaking));
-
-        await db.ExecuteAsync(
-            "INSERT INTO asset_server (id, asset_id, ip, port, server_connection, type) VALUES (:id::uuid, :asset_id, :ip, :port, :server_connection, :type)",
-        new
-        {
-            id = jobId,
-            asset_id = placeInfo.placeId,
-            ip = Configuration.GameServerIp,
-            port = networkServerPort,
-            server_connection = $"{Configuration.GameServerIp}:{networkServerPort}",
-            type = matchmaking
-        });
-
-        return new GameServerGetOrCreateResponse()
-        {
-            job = jobId,
-            ip = Configuration.GameServerIp,
-            port = proxyPort,
-            status = JoinStatus.Waiting
-        };
-    }
-
-
-    public async Task<string> StartGameServer(PlaceEntry placeInfo, int RCCPort, int networkServerPort, int proxyPort, Guid jobId, int matchmaking)
-    {
-        Console.WriteLine("Starting Gameserver");
-        var request = ArbiterHttpClient.CreateGameServerRequest(placeInfo, RCCPort, networkServerPort, proxyPort, jobId, matchmaking);
-        await arbiterClient.StartGameServer(request);
-        return "OK";
     }
 
     [Obsolete]

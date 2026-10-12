@@ -16,6 +16,7 @@ Roblox/Roblox.Website/ffprobe.exe
 Roblox/Roblox.Website/ffmpeg.exe
 Roblox/Roblox.Website/ffplay.exe
 Roblox/Roblox.Website/appsettings.json
+Roblox/Roblox.Website/local-secrets.json
 api/api.zip
 Roblox/.vs/Roblox/v17/DocumentLayout.json
 Roblox/.vs/Roblox/FileContentIndex/823af571-e643-4ced-85f3-d8bfd49c2a38.vsidx
@@ -57,12 +58,11 @@ Roblox/.editorconfig
 /RCCService2020
 /22
 /api/public/img/setup
-/game-arbiter
+/game-arbiter/config.json
 /Roblox.Goob
 /RCCService2020
 /Roblox.Goob
 /Roblox/.idea
-/game-arbiter
 /22
 /game-renderer/dist
 /game-renderer/RCCService
@@ -80,3 +80,12 @@ game-renderer/eslint.config.js.old
 
 # runtime data created by scripts/setup.sh (assets, thumbnails, ...)
 /data
+
+# bytecode from the setup tests
+__pycache__/
+
+# Local investigation scratch files
+/.cache/
+
+# Persistent private Docker configs and local account uploads
+/docker/local/

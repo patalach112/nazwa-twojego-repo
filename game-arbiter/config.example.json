@@ -1,0 +1,10 @@
+{
+  "host": "127.0.0.1",
+  "port": 4310,
+  "authorization": "change-me",
+  "rccCwd": "../RCCService",
+  "rccCommand": ["{rccCwd}/RCCService.exe", "-Console", "-Port", "{rccPort}"],
+  "soapNamespace": "http://projex.zip/",
+  "soapTimeoutMs": 10000,
+  "stopTimeoutMs": 5000
+}

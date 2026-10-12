@@ -352,18 +352,20 @@ const NewGameCard = props => {
     });
     const { hideVoting } = props;
     useEffect(() => {
-        if (!props.iconUrl) {
-            setIconUrl('/img/placeholder/icon_one.png');
-            return
-        }
-        setIconUrl(props.iconUrl);
-        getImageAspectRatio(iconUrl).then(aspectRatio => {
-            if (aspectRatio === 1) { // game icon
-                setIsThumbnail(false)
-            } else { // thumbnail
-                setIsThumbnail(true)
+        let active = true;
+        const nextIcon = props.iconUrl || '/img/placeholder/icon_one.png';
+        setIconUrl(nextIcon);
+        // State still contains the previous URL here. Probing it loaded /null on
+        // the first render and rejected an uncaught Event for every game card.
+        getImageAspectRatio(nextIcon).then(aspectRatio => {
+            if (active) setIsThumbnail(aspectRatio !== 1);
+        }).catch(() => {
+            if (active) {
+                setIconUrl('/img/placeholder/icon_one.png');
+                setIsThumbnail(false);
             }
-        })
+        });
+        return () => { active = false; };
     }, [props.iconUrl]);
 
     const [linkHover, setLinkHover] = useState(false);

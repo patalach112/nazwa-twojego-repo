@@ -42,6 +42,8 @@ public class SessionMiddleware
 
     public static void Configure(string newJwtKey)
     {
+        if (string.IsNullOrWhiteSpace(newJwtKey) || newJwtKey.Length < 32)
+            throw new ArgumentException("The session JWT key must contain at least 32 characters", nameof(newJwtKey));
         if (cookieJwtKey != null) throw new Exception("Already configured");
         cookieJwtKey = newJwtKey;
     }
@@ -130,8 +132,9 @@ public class SessionMiddleware
                         }
                     }
                     // Check if user filled out new app
-                    var appStatus = await users.IsUserApproved(userInfo.userId);
-                    if (!appStatus && !userInfo.isAdmin && !userInfo.isModerator && !StaffFilter.IsOwner(userInfo.userId))
+                    if (!Configuration.LocalRegistrationEnabled
+                        && !await users.IsUserApproved(userInfo.userId)
+                        && !userInfo.isAdmin && !userInfo.isModerator && !StaffFilter.IsOwner(userInfo.userId))
                     {
                         if (!currentPath.StartsWith("/auth/"))
                         {

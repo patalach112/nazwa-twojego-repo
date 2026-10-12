@@ -90,8 +90,10 @@ namespace Roblox.Website.Controllers
         {
             get
             {
-                var rccAccessKey = Request.Headers.ContainsKey("accesskey") ? Request.Headers["accesskey"].ToString() : null;
-                return rccAccessKey == Configuration.RccAuthorization;
+                var expected = Configuration.RccAuthorization;
+                var provided = Request.Headers["accesskey"].ToString();
+                return !string.IsNullOrEmpty(expected) && !string.IsNullOrEmpty(provided) &&
+                    CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(provided));
             }
         }
 

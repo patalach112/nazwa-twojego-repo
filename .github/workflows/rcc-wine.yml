@@ -1,0 +1,50 @@
+name: RCC Wine smoke
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - docker/rcc-wine/**
+      - docker-compose.rcc-wine.yml
+      - scripts/test_rcc_wine.py
+      - scripts/test_rcc_json_probe.py
+      - .github/workflows/rcc-wine.yml
+  push:
+    branches: [master]
+    paths:
+      - docker/rcc-wine/**
+      - docker-compose.rcc-wine.yml
+      - scripts/test_rcc_wine.py
+      - scripts/test_rcc_json_probe.py
+      - .github/workflows/rcc-wine.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check launcher syntax
+        run: |
+          sh -n docker/rcc-wine/entrypoint.sh docker/rcc-wine/run-wine.sh
+          python3 -m py_compile docker/rcc-wine/healthcheck.py docker/rcc-wine/lua_probe.py docker/rcc-wine/json_probe.py scripts/test_rcc_wine.py
+          python3 -m unittest discover -s scripts -p test_rcc_json_probe.py -v
+      - name: Build the 32-bit Wine runtime, not a pretend Linux RCC image
+        run: docker build --tag rcc-wine-test docker/rcc-wine
+      - name: Test actual RCC SOAP, legacy Lua, 2020 JSON execution and shutdown
+        # 2018 execution remains untested. 2020 must dispatch a JSON ExecuteScript
+        # job into the real Lua VM; no place or client join is claimed.
+        env:
+          RCC_WINE_RESULTS: ${{ runner.temp }}/rcc-wine-results.json
+        run: python3 scripts/test_rcc_wine.py
+      - name: Retain the compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rcc-wine-compatibility
+          path: ${{ runner.temp }}/rcc-wine-results.json
+          if-no-files-found: warn

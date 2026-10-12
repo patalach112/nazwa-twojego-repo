@@ -696,7 +696,8 @@ namespace Roblox.Website.Controllers
         public async Task<dynamic> RegisterGamePresence(long visitorId, long placeId, Guid gameId, string locationType)
         {
             // Security check
-            if (!isRCC || placeId != currentPlaceId || gameId.ToString() != currentGameId)
+            if (!isRCC || !Guid.TryParse(currentGameId, out var reportingJob) || reportingJob == Guid.Empty ||
+                placeId != currentPlaceId || gameId != reportingJob)
                 throw new UnauthorizedAccessException();
             var onlineStatus = (await services.users.MultiGetPresence(new[] {visitorId})).First();
             // RAGESOC will trigger here it's most likely a cheater because why ever would a player not be online when joining a game
@@ -708,7 +709,7 @@ namespace Roblox.Website.Controllers
             }
             // Check if a gameserver exists for the gameId, and then check if the placeId matches the assetId of the game server
             var gameServer = await services.gameServer.GetGameServer(gameId);
-            if (placeId != gameServer.assetId)
+            if (gameServer == null || placeId != gameServer.assetId)
             {
                 throw new BadRequestException();
             }
@@ -736,12 +737,14 @@ namespace Roblox.Website.Controllers
         [HttpPostBypass("presence/register-absence")]
         public async Task RegisterGamePresenceAbsence(long visitorId)
         {
-            if (!isRCC)
+            if (!isRCC || !Guid.TryParse(currentGameId, out var jobId) || jobId == Guid.Empty || currentPlaceId <= 0)
                 throw new UnauthorizedAccessException();
-            var jobId = await services.gameServer.GetJobIdByUserId(visitorId);
-            long placeId = GameServerService.GetUserPlaceId(visitorId);
-
-            await services.gameServer.OnPlayerLeave(visitorId, placeId, jobId);
+            // Use the authenticated caller's job, not the user's latest job. A
+            // delayed absence from the former RCC must not close a new session.
+            var server = await services.gameServer.GetGameServer(jobId);
+            if (server == null) return;
+            if (server.assetId != currentPlaceId) throw new BadRequestException();
+            await services.gameServer.OnPlayerLeave(visitorId, server.assetId, jobId);
         }
         [HttpGetBypass("/device/initialize")]
         [HttpPostBypass("/device/initialize")]
@@ -757,10 +760,6 @@ namespace Roblox.Website.Controllers
         public void ClientPresenceAshx(string action, long placeId, long userId, bool IsTeleport)
         {
             return;
-            // if (!ApplicationGuardMiddleware.IsRcc(Request))
-            // {
-            //     return;
-            // }
             // if(action == "disconnect")
             // {
             //     string JobId = await services.gameServer.GetJobIdByUserId(userId);

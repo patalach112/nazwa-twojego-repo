@@ -1303,8 +1303,13 @@ public class UsersService : ServiceBase, IService
         });
         // Render outside transaction to prevent deadlock/unnecessary locks
 #if !DEBUG
-        using var av = ServiceProvider.GetOrCreate<AvatarService>();
-        await av.RedrawAvatar(result.userId, Roblox.Configuration.SignupAvatarAssetIds);
+        // Accounts must not depend on an unavailable renderer. Local setups keep
+        // the avatar pending until an owned renderer has been configured.
+        if (Roblox.Rendering.RenderingHandler.IsConfigured)
+        {
+            using var av = ServiceProvider.GetOrCreate<AvatarService>();
+            await av.RedrawAvatar(result.userId, Roblox.Configuration.SignupAvatarAssetIds);
+        }
 #endif
         return result;
     }

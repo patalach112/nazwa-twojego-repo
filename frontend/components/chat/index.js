@@ -2,25 +2,28 @@ import {useEffect, useState} from "react";
 import ChatContainer from "./container";
 import {getChatSettings} from "../../services/chat";
 import ChatStore from "./chatStore";
+import AuthenticationStore from "../../stores/authentication";
 
-const Chat = props => {
-  const [enabled, setEnabled] = useState(null);
+const Chat = () => {
+  const auth = AuthenticationStore.useContainer();
+  const [enabled, setEnabled] = useState(false);
   useEffect(() => {
-    getChatSettings().then(d => {
-      if (d.chatEnabled) {
-        setEnabled(true);
-      }
-    }).catch(e => {
-      console.error('[error] error fetching chat settings:',e);
-    })
-  }, []);
+    setEnabled(false);
+    if (!auth.isAuthenticated || !auth.userId) return;
+    let cancelled = false;
+    getChatSettings().then(settings => {
+      if (!cancelled) setEnabled(settings.chatEnabled === true);
+    }).catch(() => {
+      if (!cancelled) setEnabled(false);
+    });
+    return () => { cancelled = true; };
+  }, [auth.isAuthenticated, auth.userId]);
 
-  if (!enabled)
-    return null;
-
+  // A global chat feature flag does not grant anonymous conversation access.
+  if (!auth.isAuthenticated || !auth.userId || !enabled) return null;
   return <ChatStore.Provider>
     <ChatContainer />
-  </ChatStore.Provider>
-}
+  </ChatStore.Provider>;
+};
 
 export default Chat;

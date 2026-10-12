@@ -9,24 +9,21 @@ namespace Roblox.Services.Signer;
 public class SignService : ServiceBase
 {
     private static RSACryptoServiceProvider? _rsaCsp;
-    private static SHA1? _shaCsp;
-    private static RSACryptoServiceProvider rsa = new();
     private static RSACryptoServiceProvider rsa2048 = new();
     private static readonly string newLine = "\r\n";
     private static readonly string format = "--rbxsig%{0}%{1}";
     private static readonly string format2048 = "--rbxsig2%{0}%{1}";
 
-    public static void Setup()
+    public static void Setup(string? contentRoot = null)
     {
         try
         {
-            byte[] privateKeyBlob = Convert.FromBase64String(System.IO.File.ReadAllText(@"Keys\PrivateKeyBlob.txt"));
-
-            _shaCsp = SHA1.Create();
+            var keys = Path.Combine(contentRoot ?? AppContext.BaseDirectory, "Keys");
+            byte[] privateKeyBlob = Convert.FromBase64String(File.ReadAllText(Path.Combine(keys, "PrivateKeyBlob.txt")));
             _rsaCsp = new RSACryptoServiceProvider();
 
             _rsaCsp.ImportCspBlob(privateKeyBlob);
-            rsa2048.ImportFromPem(System.IO.File.ReadAllText(@"Keys\PrivateKey2048.pem"));
+            rsa2048.ImportFromPem(File.ReadAllText(Path.Combine(keys, "PrivateKey2048.pem")));
         }
         catch (Exception ex)
         {
@@ -39,8 +36,8 @@ public class SignService : ServiceBase
         string format = "--rbxsig%{0}%{1}";
 
         string json = JsonConvert.SerializeObject(JSONToSign);
-        string script = Environment.NewLine + json;
-        byte[] signature = _rsaCsp!.SignData(Encoding.Default.GetBytes(script), _shaCsp!);
+        string script = newLine + json;
+        byte[] signature = _rsaCsp!.SignData(Encoding.UTF8.GetBytes(script), HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
 
         return String.Format(format, Convert.ToBase64String(signature), script);
     }
@@ -50,21 +47,21 @@ public class SignService : ServiceBase
         {
             string format = "--rbxsig%{0}%{1}";
 
-            byte[] signature = _rsaCsp!.SignData(Encoding.Default.GetBytes(stringToSign), _shaCsp!);
-            string script = Environment.NewLine + stringToSign;
+            string script = newLine + stringToSign;
+            byte[] signature = _rsaCsp!.SignData(Encoding.UTF8.GetBytes(script), HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
 
             return String.Format(format, Convert.ToBase64String(signature), script);
         }
         else
         {
-            byte[] signature = _rsaCsp!.SignData(Encoding.Default.GetBytes(stringToSign), _shaCsp!);
+            byte[] signature = _rsaCsp!.SignData(Encoding.UTF8.GetBytes(stringToSign), HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
             return Convert.ToBase64String(signature);
         }
     }
     public string SignJson2048(dynamic JSONToSign)
     {
         string script = newLine + JsonConvert.SerializeObject(JSONToSign);
-        byte[] signature = rsa2048.SignData(Encoding.Default.GetBytes(script), SHA1.Create());
+        byte[] signature = rsa2048.SignData(Encoding.UTF8.GetBytes(script), HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
 
         return string.Format(format2048, Convert.ToBase64String(signature), script);
     }
@@ -73,13 +70,13 @@ public class SignService : ServiceBase
         if (bUseRbxSig)
         {
             string script = newLine + stringToSign;
-            byte[] signature = rsa.SignData(Encoding.Default.GetBytes(script), SHA1.Create());
+            byte[] signature = rsa2048.SignData(Encoding.UTF8.GetBytes(script), HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
 
-            return string.Format(format, Convert.ToBase64String(signature), script);
+            return string.Format(format2048, Convert.ToBase64String(signature), script);
         }
         else
         {
-            byte[] signature = rsa2048.SignData(Encoding.Default.GetBytes(stringToSign), SHA1.Create());
+            byte[] signature = rsa2048.SignData(Encoding.UTF8.GetBytes(stringToSign), HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
             return Convert.ToBase64String(signature);
         }
     }
@@ -105,7 +102,7 @@ public class SignService : ServiceBase
     public string GenerateClientTicketV1(long userId, string username, Guid jobId, string characterAppearanceUrl)
     {
         DateTime currentUtcDateTime = DateTime.UtcNow;
-        string formattedDateTime = currentUtcDateTime.ToString("M/d/yyyy h:mm:ss tt");
+        string formattedDateTime = currentUtcDateTime.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
         string cticket = $"{userId}\n{jobId}\n{formattedDateTime}";
         string ticketSignature = SignStringResponseForClientFromPrivateKey(cticket);
         string ticket2 = $"{userId}\n{username}\n{characterAppearanceUrl}\n{jobId}\n{formattedDateTime}";
@@ -117,7 +114,7 @@ public class SignService : ServiceBase
     public string GenerateClientTicketV2(long userId, string username, Guid jobId, string characterAppearanceUrl)
     {
         DateTime currentUtcDateTime = DateTime.UtcNow;
-        string formattedDateTime = currentUtcDateTime.ToString("M/d/yyyy h:mm:ss tt");
+        string formattedDateTime = currentUtcDateTime.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
         string cticket = $"{userId}\n{jobId}\n{formattedDateTime}";
         string ticketSignature = SignString2048(cticket);
 
@@ -130,7 +127,7 @@ public class SignService : ServiceBase
     public string GenerateClientTicketV3(long userId, string username, Guid jobId)
     {
         DateTime currentUtcDateTime = DateTime.UtcNow;
-        string dateTime = currentUtcDateTime.ToString("M/d/yyyy h:mm:ss tt");
+        string dateTime = currentUtcDateTime.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
         // the second userid is meant to be characterAppearanceId
         string ticket2 = $"{userId}\n{username}\n{userId}\n{jobId}\n{dateTime}";
         string ticket2Signature = SignString2048(ticket2);
@@ -143,7 +140,7 @@ public class SignService : ServiceBase
     public string GenerateClientTicketV4(long userId, string username, string characterAppearanceUrl, string membership, Guid jobId, long accountAgeDays, long placeId)
     {
         DateTime currentUtcDateTime = DateTime.UtcNow;
-        string formattedDateTime = currentUtcDateTime.ToString("M/d/yyyy h:mm:ss tt");
+        string formattedDateTime = currentUtcDateTime.ToString("M/d/yyyy h:mm:ss tt", System.Globalization.CultureInfo.InvariantCulture);
         string countryCode = "US";
         string ticket2 = $"{userId}\n{username}\n{characterAppearanceUrl}\n{jobId}\n{formattedDateTime}";
         string ticket2Signature = SignString2048(ticket2);

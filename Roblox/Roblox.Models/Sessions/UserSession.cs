@@ -1,4 +1,3 @@
-using System.Text.Json.Serialization;
 using Roblox.Models.Users;
 
 namespace Roblox.Models.Sessions
@@ -30,21 +29,4 @@ namespace Roblox.Models.Sessions
         }
     }
 
-    public class UserAgentBypass
-    {
-        [JsonPropertyName("a")]
-        public string version { get; set; } = "1";
-        [JsonPropertyName("b")]
-        public string ipAddress { get; set; }
-        [JsonPropertyName("c")]
-        public string userAgent { get; set; }
-        [JsonPropertyName("d")]
-        public DateTime createdAt { get; set; }
-
-        public string GetSalt()
-        {
-            return createdAt.ToString() + "," + userAgent;
-        }
-    }
 }
-

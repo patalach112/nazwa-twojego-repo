@@ -29,7 +29,8 @@ const useStyles = createUseStyles({
       transition: 'none',
     },
     '@media(max-width: 400px)': {
-      padding: '0 5px!important'
+      fontSize: '13px',
+      padding: '0 2px!important'
     }
   },
   navItem: {

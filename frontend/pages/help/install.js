@@ -18,7 +18,7 @@ const InstallHelp = props => {
     );
 }
 
-export const getStaticProps = () => {
+export const getServerSideProps = async () => {
     return {
         props: {
             title: 'Installation Help - Marine',

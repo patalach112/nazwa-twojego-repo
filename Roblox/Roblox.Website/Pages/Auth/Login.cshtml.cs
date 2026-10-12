@@ -67,15 +67,8 @@ public class Login : RobloxPageModel
             sessionId = sess,
             createdAt = DateTimeOffset.Now.ToUnixTimeSeconds(),
         });
-        HttpContext.Response.Cookies.Append(Middleware.SessionMiddleware.CookieName, sessionCookie, new CookieOptions()
-        {
-            Secure = true,
-            Expires = DateTimeOffset.Now.Add(TimeSpan.FromDays(364)),
-            IsEssential = true,
-            HttpOnly = true,
-            Path = "/",
-            SameSite = SameSiteMode.Lax,
-        });
+        HttpContext.Response.Cookies.Append(Middleware.SessionMiddleware.CookieName, sessionCookie,
+            Lib.SessionCookieOptions.Create(Configuration.BaseUrl));
     }
 
     private static async Task PreventTimingExploits(Stopwatch watch)
@@ -117,7 +110,7 @@ public class Login : RobloxPageModel
             return new PageResult();
         }
 
-        if (string.IsNullOrEmpty(hCaptchaResponse))
+        if (captchaEnabled && string.IsNullOrEmpty(hCaptchaResponse))
         {
             errorMessage = BadCaptchaMessage;
             return new PageResult();
