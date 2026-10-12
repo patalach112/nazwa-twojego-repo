@@ -20,6 +20,7 @@ profile:
 """
 
 import base64
+import http.client
 import json
 import os
 from pathlib import Path
@@ -218,6 +219,8 @@ def wait_for_health(timeout=WARMUP_TIMEOUT):
                     last = json.loads(error.read())
                 except ValueError:
                     last = {"message": f"HTTP {error.code}"}
+        except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as error:
+            last = {"message": f"the renderer was not reachable: {error}"}
         time.sleep(5)
     fail(f"the renderer never reported healthy RCC within {timeout}s; last answer: {last}")
 
@@ -249,7 +252,7 @@ def wait_for_renderer_authorization(authorization, timeout=90):
     fail(f"the renderer never accepted the enabled Authorization value within {timeout}s: {last}")
 
 
-def renderer_post(path, payload, authorization=None, timeout=30):
+def renderer_post_once(path, payload, authorization=None, timeout=30):
     headers = {"Content-Type": "application/json"}
     if authorization is not None:
         headers["Authorization"] = authorization
@@ -260,8 +263,26 @@ def renderer_post(path, payload, authorization=None, timeout=30):
         with opener.open(request, timeout=timeout) as response:
             return response.status, json.loads(response.read())
     except urllib.error.HTTPError as error:
+        # A real answer, including 401/501/502: never retried as a transport failure.
         with error:
             return error.code, json.loads(error.read())
+
+
+def renderer_post(path, payload, authorization=None, timeout=30, attempts=6, pause=5):
+    """Posts to the renderer, tolerating the service being restarted meanwhile.
+
+    Restarting a service in this stack can restart the containers that depend on it, so
+    a connection reset here means "wait for the renderer", not a renderer failure.
+    """
+    last = None
+    for attempt in range(attempts):
+        try:
+            return renderer_post_once(path, payload, authorization, timeout)
+        except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as error:
+            last = error
+            if attempt < attempts - 1:
+                time.sleep(pause)
+    fail(f"the renderer did not answer POST {path} after {attempts} attempts: {last}")
 
 
 def main():

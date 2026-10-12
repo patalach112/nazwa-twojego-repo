@@ -260,6 +260,9 @@ class ContainerLayoutTest(unittest.TestCase):
         self.assertEqual(renderer['build'], {'context': 'docker', 'dockerfile': 'renderer/Dockerfile'})
         self.assertEqual(renderer['environment']['RCC_VERIFY_THUMBNAIL_SCRIPTS'], '1')
         self.assertEqual(renderer['ports'], ['127.0.0.1:${RENDERER_PORT:-3521}:3521'])
+        # Depending on the website makes `restart website` restart the renderer, which
+        # cuts renders in flight; the renderer does not need the website to start.
+        self.assertNotIn('depends_on', renderer)
         self.assertEqual(renderer['cap_drop'], ['ALL'])
         self.assertTrue(renderer['read_only'])
 
@@ -428,6 +431,77 @@ class AuthorizationSourceTest(unittest.TestCase):
     def test_a_missing_file_does_not_raise(self):
         source = renderer.AuthorizationSource(path='/does/not/exist.json', refresh=0.0)
         self.assertIsNone(source.current())
+
+
+class RendererRestartToleranceTest(unittest.TestCase):
+    """A renderer that is being restarted must be waited for, not misread."""
+
+    def setUp(self):
+        os.environ.pop('RENDERER_TEST', None)
+        spec = importlib.util.spec_from_file_location('renderer_test_retry',
+                                                      ROOT / 'scripts/test_local_renderer.py')
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def flaky_server(self, failures=1, break_length=None):
+        """A server that resets the first `failures` connections, then answers JSON."""
+        state = {'seen': 0}
+
+        class Flaky(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get('Content-Length') or 0)
+                self.rfile.read(length)
+                state['seen'] += 1
+                if state['seen'] <= failures:
+                    if break_length is not None:
+                        # A response that stops in the middle of the status line.
+                        self.wfile.write(b'HTTP/1.1 20')
+                        self.wfile.flush()
+                    self.close_connection = True
+                    return
+                payload = json.dumps({'success': True, 'data': 'x'}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *arguments):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Flaky)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return f'http://127.0.0.1:{server.server_address[1]}', state
+
+    def test_a_reset_connection_is_retried_and_then_succeeds(self):
+        url, state = self.flaky_server(failures=1)
+        self.module.RENDERER_URL = url
+        status, body = self.module.renderer_post('/image/image', {'assetId': 1}, attempts=3, pause=0)
+        self.assertEqual(status, 200)
+        self.assertTrue(body['success'])
+        self.assertEqual(state['seen'], 2, 'the reset connection must be retried once')
+
+    def test_a_truncated_answer_is_retried_too(self):
+        url, state = self.flaky_server(failures=1, break_length=True)
+        self.module.RENDERER_URL = url
+        status, _ = self.module.renderer_post('/image/image', {'assetId': 1}, attempts=3, pause=0)
+        self.assertEqual(status, 200)
+        self.assertEqual(state['seen'], 2)
+
+    def test_a_real_http_answer_is_never_retried(self):
+        url, state = self.flaky_server(failures=0)
+        self.module.RENDERER_URL = url
+        status, _ = self.module.renderer_post('/image/image', {'assetId': 1}, attempts=3, pause=0)
+        self.assertEqual((status, state['seen']), (200, 1))
+
+    def test_an_unreachable_renderer_fails_with_a_clear_message(self):
+        self.module.RENDERER_URL = 'http://127.0.0.1:1'
+        with self.assertRaises(SystemExit) as caught:
+            self.module.renderer_post('/image/image', {'assetId': 1}, attempts=2, pause=0)
+        self.assertIn('did not answer POST /image/image', str(caught.exception))
 
 
 class WarmupTest(unittest.TestCase):

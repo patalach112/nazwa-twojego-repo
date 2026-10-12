@@ -103,6 +103,11 @@ pending instead of being faked:
 * RCC and the renderer share a container and a memory/CPU limit; the renderer is the
   foreground process, so a stuck RCC is stopped by the same `SIGTERM`/`stop_grace_period`
   that stops the renderer.
+* The renderer deliberately does not declare `depends_on: website`. It needs neither the
+  website nor a healthy database to start, and depending on the website makes
+  `restart website` restart the renderer and cut the renders it is doing. The website is
+  the one that needs the renderer configured, and a website restart only makes the
+  renderer re-read `Render:Authorization` from the mounted config.
 * Every job gets an `expirationInSeconds` and a matching client timeout, and `CloseJob`
   runs in a `finally` block, so a stuck render is reported and cleaned up instead of
   hammering RCC.
