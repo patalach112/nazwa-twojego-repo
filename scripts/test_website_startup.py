@@ -1,6 +1,8 @@
 """Bounded full-website startup smoke test; no frontend, validator or RCC is needed."""
 
 import json
+import http.cookiejar
+from html.parser import HTMLParser
 import os
 import re
 from pathlib import Path
@@ -11,6 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import urllib.parse
 import uuid
 
 
@@ -21,6 +24,17 @@ WEBSITE = ROOT / "Roblox/Roblox.Website"
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, target):
         return None
+
+
+class FormTokenParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.token = None
+
+    def handle_starttag(self, tag, attributes):
+        values = dict(attributes)
+        if tag == "input" and values.get("name") == "__RequestVerificationToken":
+            self.token = values.get("value")
 
 
 def main():
@@ -87,7 +101,27 @@ def main():
                         raise RuntimeError("The retired browser captcha route did not redirect to the site") from None
                     if error.headers.get("Set-Cookie"):
                         raise RuntimeError("The retired browser captcha still issued a bypass cookie") from None
-                print("Full website startup, signing setup, public routing without browser gates and retained account/game-server authorization passed on Linux.")
+                login_opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+                login_url = f"http://127.0.0.1:{port}/auth/accountlogin"
+                login_request = urllib.request.Request(login_url, headers={"User-Agent": "curl/8.0"})
+                with login_opener.open(login_request, timeout=5) as response:
+                    login_html = response.read().decode()
+                if "cf-turnstile" in login_html or "turnstile/v0/api.js" in login_html:
+                    raise RuntimeError("The local login page still requires a Cloudflare widget")
+                form = FormTokenParser()
+                form.feed(login_html)
+                if not form.token:
+                    raise RuntimeError("The Razor login form lost its antiforgery token")
+                invalid_login = urllib.request.Request(login_url, data=urllib.parse.urlencode({
+                    "username": "missing-" + uuid.uuid4().hex,
+                    "password": "incorrect-local-test-password",
+                    "__RequestVerificationToken": form.token,
+                }).encode(), headers={"User-Agent": "curl/8.0", "Content-Type": "application/x-www-form-urlencoded"}, method="POST")
+                with login_opener.open(invalid_login, timeout=10) as response:
+                    login_result = response.read().decode()
+                if "Incorrect username or password" not in login_result:
+                    raise RuntimeError("The local login without captcha did not reach normal credential validation")
+                print("Full website startup, public routing without browser gates, captcha-free local login and retained account/game-server authorization passed on Linux.")
             except Exception:
                 # Never print generated credentials while diagnosing startup errors.
                 text = log_path.read_text()

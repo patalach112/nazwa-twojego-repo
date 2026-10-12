@@ -48,8 +48,8 @@ Roblox.Configuration.AdminBundleDirectory = configuration.GetSection("Directorie
 Roblox.Configuration.EconomyChatBundleDirectory = configuration.GetSection("Directories:EconomyChatBundle").Value!;
 Roblox.Configuration.BaseUrl = configuration.GetSection("BaseUrl").Value!;
 Roblox.Configuration.ShortBaseUrl = Roblox.Configuration.BaseUrl!.Replace("https://www.", "");
-Roblox.Configuration.HCaptchaPublicKey = configuration.GetSection("HCaptcha:Public").Value!;
-Roblox.Configuration.HCaptchaPrivateKey = configuration.GetSection("HCaptcha:Private").Value!;
+Roblox.Libraries.Captcha.HCaptcha.Configure(configuration.GetValue<bool?>("HCaptcha:Enabled"),
+    configuration["HCaptcha:Public"], configuration["HCaptcha:Private"]);
 // Discord OAuth related Stuff
 Roblox.Configuration.DiscordClientId = configuration.GetSection("Discord:ClientId").Value!;
 Roblox.Configuration.DiscordClientSecret = configuration.GetSection("Discord:ClientSecret").Value!;

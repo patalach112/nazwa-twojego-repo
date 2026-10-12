@@ -164,14 +164,17 @@
 
                             <div class="input-padding"></div>
 
-                            <div class="stage-6">
-                                <h4>Step 6 - Captcha</h4>
-                                <div class="p-2">
-                                    <p class="mb-0">We just have to make sure you aren't a robot.</p>
-                                    <div class="cf-turnstile mt-4" data-sitekey="@Model.siteKey" data-theme="dark"></div>
+                            @if (Model.captchaEnabled)
+                            {
+                                <div class="stage-6">
+                                    <h4>Step 6 - Captcha</h4>
+                                    <div class="p-2">
+                                        <p class="mb-0">We just have to make sure you aren't a robot.</p>
+                                        <div class="cf-turnstile mt-4" data-sitekey="@Model.siteKey" data-theme="dark"></div>
+                                    </div>
                                 </div>
-                                @Html.AntiForgeryToken()
-                            </div>
+                            }
+                            @Html.AntiForgeryToken()
                         </div>
 
                         <div class="stage-submit">
@@ -186,4 +189,7 @@
     </div>
 </div>
 
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+@if (Model.captchaEnabled)
+{
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+}

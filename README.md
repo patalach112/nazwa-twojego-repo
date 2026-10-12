@@ -144,8 +144,9 @@ verify legacy/2048-bit signatures, portable key paths and the configured JWT key
 they do not read the original leaked private keys. A separate Linux smoke test
 boots the complete website with isolated generated configs, exercises signing-key
 setup and checks authorized/unauthorized `/gs/activity` through the real middleware
-pipeline. It does not start the frontend, validator or RCC, or prove that a real
-client can join. Original signing keys remain compromised despite the portable
+pipeline. It also checks captcha-free local login reaches normal credential
+validation while the Razor antiforgery token remains. It does not start the
+frontend, validator or RCC, or prove that a real client can join. Original signing keys remain compromised despite the portable
 loader fix.
 
 # HTTP ACCESS WITHOUT THE LEGACY GATES
@@ -159,7 +160,14 @@ extra keys in existing private configs can remain without affecting startup.
 
 Session validation, password checks, staff permissions and the independently
 authenticated game-server/bot/RCC endpoints are **not** removed. Razor forms retain
-their framework antiforgery tokens and any form-specific captcha checks.
+their framework antiforgery tokens. Form captcha is optional as described below.
+
+Local form captcha is disabled in fresh configs with `HCaptcha:Enabled: false`.
+Login, application, reset and support forms do not load a Cloudflare widget or
+require a provider response in this mode. Password verification, 2FA, account
+status and rate limits remain unchanged. Set `HCaptcha:Enabled` to `true` with
+both provider keys to enable it. Older configs without this switch keep captcha
+on when both keys are present, and off when the local keys are empty.
 
 Removing the global CSRF check is an intentional security trade-off, not a
 security fix. Cookie-authenticated API writes are no longer protected by that

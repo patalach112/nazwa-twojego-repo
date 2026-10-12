@@ -20,7 +20,10 @@
                         <input type="hidden" name="action" value="SubmitNewTicket" />
                         <input maxlength="100" type="text" name="subject" class="form-control" placeholder="Subject" />
                         <textarea maxlength="1000" name="body" rows="8" class="form-control w-100 mt-2" placeholder="Ticket body. Include details that may be relevant, such as your account username, your browser, specific URLs, etc."></textarea>
-                        <div class="cf-turnstile mt-4 mb-2" data-sitekey="@Model.siteKey" data-theme="dark"></div>
+                        @if (Model.captchaEnabled)
+                        {
+                            <div class="cf-turnstile mt-4 mb-2" data-sitekey="@Model.siteKey" data-theme="dark"></div>
+                        }
                         @Html.AntiForgeryToken()
                         <input class="btn btn-primary" type="submit" value="Submit" id="login-submit"/>
                     </form>
@@ -30,4 +33,7 @@
     </div>
 </div>
 
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+@if (Model.captchaEnabled)
+{
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+}

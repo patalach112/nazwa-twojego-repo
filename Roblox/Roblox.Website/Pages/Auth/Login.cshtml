@@ -44,7 +44,10 @@
                     {
                         <p><a href="/auth/password-reset">Reset Password</a></p>
                     }
-                    <div class="cf-turnstile text-center mt-4 mb-2" data-sitekey="@Model.siteKey" data-theme="dark"></div>
+                    @if (Model.captchaEnabled)
+                    {
+                        <div class="cf-turnstile text-center mt-4 mb-2" data-sitekey="@Model.siteKey" data-theme="dark"></div>
+                    }
                     @Html.AntiForgeryToken()
                     <div class="d-grid gap-2 mt-4 mb-4">
                         <input disabled="@Model.loginDisabled" class="btn btn-primary btn-custom" type="submit" value="Login" id="login-submit"/>
@@ -63,4 +66,7 @@
     </div>
 </div>
 
-<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+@if (Model.captchaEnabled)
+{
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback" defer></script>
+}

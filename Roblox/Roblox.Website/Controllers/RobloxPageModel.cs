@@ -42,6 +42,7 @@ public class RobloxPageModel : PageModel
         }
     }
     public bool isAuthenticated => userSession != null;
+    public bool captchaEnabled => Roblox.Libraries.Captcha.HCaptcha.IsEnabled;
     protected string rawIpAddress => Roblox.Website.Controllers.ControllerBase.GetRequesterIpRaw(HttpContext);
     protected string hashedIp => Roblox.Website.Controllers.ControllerBase.GetIP(rawIpAddress);
 
