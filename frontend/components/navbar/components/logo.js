@@ -1,3 +1,4 @@
+import {useEffect, useState} from "react";
 import { createUseStyles } from "react-jss";
 import { getLogoStyle, logoStyle } from "../../../services/theme";
 import NavigationStore from "../../../stores/navigation";
@@ -77,7 +78,10 @@ const useLogoStyles = createUseStyles({
 });
 const Logo = () => {
   const s = useLogoStyles();
-  const logo = getLogoStyle();
+  // Match the server on the first render, then apply the local preference.
+  // React can otherwise keep the server's inline style during hydration.
+  const [logo, setLogo] = useState(logoStyle.Default);
+  useEffect(() => { setLogo(getLogoStyle()); }, []);
   const navStore = NavigationStore.useContainer();
   const auth = AuthenticationStore.useContainer();
 

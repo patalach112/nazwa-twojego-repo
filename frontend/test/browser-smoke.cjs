@@ -143,14 +143,32 @@ async function main() {
       const redirect = await context.request.get(origin + '/login', {maxRedirects: 0});
       assert.equal(redirect.status(), 307);
       assert.equal(redirect.headers().location, '/auth/accountlogin');
-      await page.evaluate(() => localStorage.setItem('rbx_logo_style_v1', 'Pekora'));
-      await page.reload({waitUntil: 'domcontentloaded'});
-      await page.waitForFunction(expected => [...document.querySelectorAll('nav a[aria-label="Marine home"]')]
-        .filter(element => element.getBoundingClientRect().width > 0)
-        .some(element => getComputedStyle(element).backgroundImage.includes(expected)),
-        viewport.width >= 1325 ? 'pekora-logo.png' : 'favicon.png');
-      assert.deepEqual(errors, [], 'Browser errors after changing logo preferences');
-      assert.deepEqual(failedRequests, [], 'Unexpected local HTTP failures after changing logo preferences');
+      for (const preset of ['Pekora', 'Roblox2016']) {
+        await page.evaluate(value => localStorage.setItem('rbx_logo_style_v1', value), preset);
+        await page.reload({waitUntil: 'domcontentloaded'});
+        // Exercise a client-side update so a server-rendered default alone
+        // cannot satisfy the legacy-preset fallback assertion before hydration.
+        await page.locator('nav').getByPlaceholder('Search', {exact: true}).fill('classic');
+        await page.getByText('Search "classic" in Games', {exact: true}).waitFor();
+        await page.locator('nav').getByPlaceholder('Search', {exact: true}).fill('');
+        const expected = viewport.width < 1325 ? 'favicon.png'
+          : preset === 'Pekora' ? 'pekora-logo.png' : '/img/logo.png';
+        try {
+          await page.waitForFunction(image => [...document.querySelectorAll('nav a[aria-label="Marine home"]')]
+            .filter(element => element.getBoundingClientRect().width > 0)
+            .some(element => getComputedStyle(element).backgroundImage.includes(image)), expected);
+        } catch (error) {
+          const diagnostic = await page.evaluate(() => ({preference: localStorage.getItem('rbx_logo_style_v1'),
+            logos: [...document.querySelectorAll('nav a[aria-label="Marine home"]')].map(element => ({
+              width: element.getBoundingClientRect().width, image: getComputedStyle(element).backgroundImage,
+              inline: element.getAttribute('style'),
+            }))}));
+          throw new Error('Logo preference did not render: ' + JSON.stringify(diagnostic));
+        }
+        assert.deepEqual(errors, [], 'Browser errors after changing logo preferences');
+        assert.deepEqual(failedRequests, [], 'Unexpected local HTTP failures after changing logo preferences');
+      }
+      console.log(mode + ': logo preferences and missing-preset fallback passed at ' + viewport.width + 'px');
       await context.close();
     }
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({mode, scope: 'Real browser, sample API fixtures only', results}, null, 2));
