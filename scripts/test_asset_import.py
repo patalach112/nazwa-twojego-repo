@@ -30,6 +30,7 @@ import struct
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,18 +46,43 @@ HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GENERATOR_NOTICE = "Local Docker configs are ready"
 
 
+# Configured secrets are replaced in every message this helper prints, so a
+# failure can be published as an annotation without exposing the local config.
+REDACT = []
+
+
+def scrub(text):
+    for value in REDACT:
+        if value:
+            text = text.replace(value, "[redacted]")
+    return text
+
+
+def trace(step):
+    print(f"Asset import: {time.strftime('%H:%M:%S')} {step}", flush=True)
+
+
 def fail(message):
-    text = "Asset import test failed: " + message
-    # Surface the reason as a workflow annotation; raw step logs are not always
-    # retrievable and this keeps the diagnostic next to the failing run.
+    text = scrub("Asset import test failed: " + message)
+    print(text, file=sys.stderr, flush=True)
+    # Raw step logs are not always retrievable, so publish the reason as a
+    # workflow annotation and in the job summary instead of only in the log.
     if os.environ.get("GITHUB_ACTIONS") == "true":
         escaped = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-        print(f"::error title=Asset import check::{escaped}", file=sys.stderr)
+        print(f"::error title=Asset import check::{escaped}")
+        summary = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary:
+            try:
+                with open(summary, "a") as stream:
+                    stream.write("### Asset import check\n\n```\n" + text[:3000] + "\n```\n")
+            except OSError:
+                pass
     raise SystemExit(text)
 
 
 def notice(message):
-    print("Asset import: " + message)
+    message = scrub(message)
+    print("Asset import: " + message, flush=True)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         print("::notice title=Asset import check::" + message)
 
@@ -174,11 +200,26 @@ def run_stack(*arguments, timeout=180):
 def psql(database, sql):
     output = run_stack("exec", "-T", "postgres", "psql", "--username", "postgres", "--dbname", database,
                        "--tuples-only", "--no-align", "--command", sql)
-    return [line for line in output.splitlines() if line.strip()]
+    rows = [line for line in output.splitlines() if line.strip()]
+    if not rows:
+        fail(f"the real database returned no rows for: {sql}")
+    return rows
+
+
+def website_log_tail():
+    """Last website container lines, used when the backend is unreachable."""
+    try:
+        result = subprocess.run(["bash", "scripts/local-stack.sh", "logs", "--no-color", "--tail", "40",
+                                 "website"], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        lines = [line for line in (result.stdout + result.stderr).splitlines() if line.strip()]
+        return " | ".join(lines[-12:])[-900:]
+    except (subprocess.SubprocessError, OSError):
+        return ""
 
 
 def wait_ready(backend, frontend):
     deadline = time.monotonic() + 120
+    last = ""
     while time.monotonic() < deadline:
         try:
             try:
@@ -190,10 +231,25 @@ def wait_ready(backend, frontend):
             with urllib.request.urlopen(frontend + "/", timeout=5) as response:
                 if response.status == 200:
                     return
-        except urllib.error.URLError:
-            pass
+        except (urllib.error.URLError, OSError) as error:
+            last = str(getattr(error, "reason", error))[:200]
         time.sleep(0.5)
-    fail("the local stack did not become reachable within two minutes")
+    detail = website_log_tail()
+    fail("the local stack did not become reachable within two minutes"
+         + (f" ({last})" if last else "") + (f": {detail}" if detail else ""))
+
+
+def write_config_bytes(path, content):
+    """Rewrites a generated config in place so bind mounts keep working."""
+    with open(path, "r+b") as stream:
+        stream.seek(0)
+        stream.write(content)
+        stream.truncate()
+    os.chmod(path, 0o600)
+
+
+def write_config(path, value):
+    write_config_bytes(path, json.dumps(value, indent=2).encode() + b"\n")
 
 
 def host_directory(container_path):
@@ -305,8 +361,10 @@ def main():
     thumbnails_directory = host_directory(website["Directories"]["Thumbnails"])
     renderer_configured = bool(website.get("Render", {}).get("BaseUrl"))
     configuration_secrets = collect_secrets(website)
+    REDACT.extend(configuration_secrets)
 
     try:
+        trace("waiting for the disposable stack")
         wait_ready(backend, frontend)
         # TEST-NET-2 addresses keep the two real registrations from sharing the
         # five-minute per-IP signup cooldown without weakening it for real clients.
@@ -322,12 +380,11 @@ def main():
             fail("the disposable config already lists an owner; refusing to replace it")
         patched = json.loads(original_website)
         patched["OwnerUserId"] = [owner_id]
-        temporary = website_path.with_suffix(".json.asset-import-test")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w") as stream:
-            json.dump(patched, stream, indent=2)
-            stream.write("\n")
-        os.replace(temporary, website_path)
+        # The website container bind-mounts this exact file. Rewriting the same
+        # inode keeps that mount valid across `docker compose restart`, which a
+        # rename would not: the container would keep reading the old file.
+        write_config(website_path, patched)
+        trace("owner configured; restarting the website")
         run_stack("restart", "website")
         wait_ready(backend, frontend)
         if json.loads(website_path.read_text())["OwnerUserId"] != [owner_id]:
@@ -440,9 +497,16 @@ def main():
         if json.loads(website_path.read_text())["OwnerUserId"] != [owner_id]:
             fail("the restart test modified the owner configuration")
         notice("asset rows, file and delivery survive a backend restart")
+    except SystemExit:
+        raise
+    except Exception as error:  # noqa: BLE001 - the reason must reach the annotation
+        # An unexpected exception would otherwise leave only a traceback in a raw
+        # log that is not always retrievable, so report it like any other failure
+        # and redact the config first.
+        fail(f"unexpected {type(error).__name__}: {error}\n" + traceback.format_exc()[-1200:])
     finally:
         # Hand the disposable configuration back exactly as it was generated.
-        website_path.write_bytes(original_website)
+        write_config_bytes(website_path, original_website)
 
     print("Asset import through the real admin API, local storage and restart behaviour passed.")
     print("Rendering (RCC), the admin panel, avatar thumbnails and game joins remain separate work.")
