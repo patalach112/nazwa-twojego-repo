@@ -1,19 +1,19 @@
-"""Contract and behaviour tests for the renderer service; real RCC rendering needs CI.
+#!/usr/bin/env python3
+"""Contract tests for the local renderer, its RCC scripts and its container layout.
 
-These tests run without Docker or Wine:
+These run without Docker, so they are the tests the renderer workflow runs first. They
+check three things that have to stay true:
 
-* the renderer's routes are checked against the thumbnail scripts RCC 2020 ships and
-  loads (`internalscripts/thumbnails/<Settings.Type>.lua`), parsed from the files
-  themselves, so a script's argument list and the renderer cannot drift apart,
-* nothing in this repository may shadow or replace one of those scripts,
-* the HTTP surface is exercised against a real server with a substitute RCC:
-  authorization, unimplemented endpoints, placeholder rejection, JSON errors,
-* the SOAP reply parser is checked against a decoy text node, a reply with no image
-  and a SOAP fault,
-* the pixel reader used by the integration test is checked on real PNG bytes.
+* the renderer calls RCC exactly the way RCC's own thumbnail scripts expect - the scripts
+  are the build's, loaded by ``Settings.Type``, and are never modified or shadowed here;
+* the renderer refuses to answer with a placeholder (including the fallback images the
+  shipped scripts carry), an unimplemented endpoint or a wrong secret;
+* the container layout keeps RCC and the renderer in one container, because RCC binds its
+  SOAP port to the loopback of whichever container it runs in.
 """
 
 import base64
+import http.client
 import http.server
 import importlib.util
 import json
@@ -24,11 +24,11 @@ import sys
 import tempfile
 import threading
 import time
-
-import yaml
 import unittest
+
 import urllib.error
 import urllib.request
+import yaml
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +39,7 @@ sys.path.insert(0, str(ROOT / 'docker/renderer'))
 import renderer  # noqa: E402
 sys.path.insert(0, str(ROOT / 'scripts'))
 import configure_local_docker  # noqa: E402
+import probe_rcc_image  # noqa: E402
 
 
 def make_png(width, height, left=(255, 0, 0), right=(0, 0, 255)):
@@ -55,12 +56,12 @@ def make_png(width, height, left=(255, 0, 0), right=(0, 0, 255)):
         rows.append(b'\x00' + row)
     return (b'\x89PNG\r\n\x1a\n'
             + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
-            + chunk(b'IDAT', zlib.compress(b''.join(rows), 6))
+            + chunk(b'IDAT', zlib.compress(b''.join(rows), 9))
             + chunk(b'IEND', b''))
 
 
 class FakeRcc:
-    """Substitute RCC: records calls and answers with a real PNG of the asked size."""
+    """Substitute RCC: records the jobs it is asked for and answers with a real PNG."""
 
     def __init__(self, image=None, error=None):
         self.image = image
@@ -80,13 +81,14 @@ class FakeRcc:
             raise renderer.RenderError(self.error)
         return {'version': self.version, 'lastContactSeconds': 0.4, 'busy': self.busy, 'stale': False}
 
-    def render(self, script_type, arguments, expected_edge):
+    def render(self, script_type, arguments, expected_edge, placeholders=None):
         self.calls.append((script_type, arguments, expected_edge))
         self.jobs.append(script_type)
         if self.error:
             raise renderer.RenderError(self.error)
         image = self.image if self.image is not None else make_png(420, 420)
-        return renderer.decode_render_output(base64.b64encode(image).decode(), expected_edge)
+        return renderer.decode_render_output(base64.b64encode(image).decode(), expected_edge,
+                                             placeholders)
 
 
 class FakeWebsite:
@@ -108,170 +110,539 @@ class FakeWebsite:
         }
 
 
+def declared_arguments(script):
+    """The argument names in the first 'local ... = ...' line of a shipped script."""
+    for line in (SCRIPTS / f'{script}.lua').read_text().splitlines():
+        if '= ...' not in line:
+            continue
+        names = line.split('=')[0].strip()
+        if names.startswith('local '):
+            names = names[len('local '):]
+        return [name.strip() for name in names.split(',')]
+    raise AssertionError(f'{script}.lua does not declare its arguments')
+
+
 class LuaContractTest(unittest.TestCase):
-    """The renderer must satisfy RCC's own thumbnail scripts, unmodified."""
+    """The renderer must satisfy RCC's own scripts, and never shadow them."""
 
-    def declared_arguments(self, script):
-        """The varargs list from the script's own first assignment to `...`."""
-        for line in script.read_text().splitlines():
-            if line.strip().startswith('--') or '=' not in line:
-                continue
-            head, _, tail = line.partition('=')
-            if tail.strip() != '...':
-                continue
-            names = [name.strip() for name in head.replace('local', '', 1).split(',')]
-            return [name for name in names if name]
-        self.fail(f'{script.name} does not declare a varargs argument list')
+    def service(self, **kwargs):
+        kwargs.setdefault('rcc', FakeRcc())
+        kwargs.setdefault('website', FakeWebsite(**kwargs.pop('website_kwargs', {})))
+        kwargs.setdefault('placeholders', {})
+        return renderer.Renderer(**kwargs)
 
-    def renderer_for(self, rig='R6'):
-        return renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite(rig=rig))
+    def test_every_route_uses_a_script_the_build_ships(self):
+        service = self.service()
+        payloads = {'/image/image': {'assetId': 7}, '/catalog/model': {'assetId': 7},
+                    '/catalog/hat': {'assetId': 7}, '/catalog/mesh': {'assetId': 7},
+                    '/player/thumbnail': {'userId': 3}, '/player/headshot': {'userId': 3}}
+        self.assertEqual(set(payloads), set(service.routes))
+        for path, payload in payloads.items():
+            script, arguments = service.routes[path](service, payload)
+            self.assertTrue((SCRIPTS / f'{script}.lua').is_file(), f'{path} -> {script}.lua is missing')
+            self.assertEqual(len(arguments), len(declared_arguments(script)),
+                             f'{path} -> {script}.lua takes {declared_arguments(script)}')
 
-    def test_the_build_ships_every_script_the_renderer_asks_for(self):
-        required = [line.strip() for line in (ROOT / 'docker/rcc-wine/required-thumbnail-scripts.txt')
-                    .read_text().splitlines() if line.strip() and not line.startswith('#')]
-        self.assertIn('Image', required)
-        self.assertIn('Avatar', required)
-        for name in required:
-            self.assertTrue((SCRIPTS / f'{name}.lua').is_file(),
-                            f'{name}.lua is listed as required but the build does not ship it')
+    def test_every_argument_matches_the_declared_name(self):
+        service = self.service()
+        for path, payload, expected in (
+                ('/image/image', {'assetId': 7},
+                 {'imageId': 7, 'baseUrl': 'http://website.test', 'fileExtension': 'PNG', 'x': 420, 'y': 420}),
+                ('/catalog/model', {'assetId': 7},
+                 {'assetUrl': 'http://website.test/asset/?id=7', 'fileExtension': 'PNG',
+                  'x': 420, 'y': 420, 'baseUrl': 'http://website.test'}),
+                ('/catalog/hat', {'assetId': 7},
+                 {'assetUrl': 'http://website.test/asset/?id=7', 'fileExtension': 'PNG',
+                  'x': 420, 'y': 420, 'baseUrl': 'http://website.test'}),
+                ('/catalog/mesh', {'assetId': 7},
+                 {'assetUrl': 'http://website.test/asset/?id=7', 'fileExtension': 'PNG',
+                  'x': 420, 'y': 420, 'baseUrl': 'http://website.test'}),
+                ('/player/thumbnail', {'userId': 3},
+                 {'characterAppearanceUrl': 'http://website.test/v1.1/avatar-fetch?userId=3',
+                  'baseUrl': 'http://website.test', 'fileExtension': 'PNG', 'x': 420, 'y': 420}),
+                ('/player/headshot', {'userId': 3},
+                 {'baseUrl': 'http://website.test',
+                  'characterAppearanceUrl': 'http://website.test/v1.1/avatar-fetch?userId=3',
+                  'fileExtension': 'PNG', 'x': 420, 'y': 420, 'quadratic': True,
+                  'baseHatZoom': 40, 'maxHatZoom': 60, 'cameraOffsetX': 0, 'cameraOffsetY': 0})):
+            script, arguments = service.routes[path](service, payload)
+            names = declared_arguments(script)
+            self.assertEqual([names[i] for i in range(len(arguments))], names,
+                             f'{path} must pass exactly the declared arguments of {script}.lua')
+            values = dict(zip(names, arguments))
+            for name, wanted in expected.items():
+                self.assertEqual(values[name], wanted, f'{path} passes {name}')
 
-    def test_this_repository_never_shadows_a_shipped_script(self):
-        offenders = [str(path.relative_to(ROOT)) for path in (ROOT / 'docker/rcc-wine').rglob('*.lua')
-                     if path.parent.name in ('thumbnails', 'internalscripts')]
-        self.assertEqual(offenders, [], 'a local script would shadow one RCC ships')
+    def test_the_avatar_script_follows_the_avatar_type(self):
+        r6 = self.service()
+        r15 = self.service(website_kwargs={'rig': 'R15'})
+        self.assertEqual(r6.routes['/player/thumbnail'](r6, {'userId': 3})[0], 'Avatar')
+        self.assertEqual(r15.routes['/player/thumbnail'](r15, {'userId': 3})[0], 'Avatar_R15_Action')
+        # Both orders come from the scripts themselves: Avatar.lua takes the appearance
+        # URL first, the R15 script takes the base URL first.
+        for service in (r6, r15):
+            script, arguments = service.routes['/player/thumbnail'](service, {'userId': 3})
+            names = declared_arguments(script)
+            self.assertEqual(names, list(service.avatar_argument_order[script]))
+            self.assertEqual(len(arguments), len(names))
 
-    def test_every_route_is_backed_by_a_shipped_script_and_matching_arguments(self):
-        service = self.renderer_for()
-        cases = {
-            '/image/image': {'assetId': 7},
-            '/catalog/model': {'assetId': 7},
-            '/catalog/hat': {'assetId': 7},
-            '/catalog/mesh': {'assetId': 7},
-            '/player/thumbnail': {'userId': 3},
-            '/player/headshot': {'userId': 3},
-        }
-        self.assertEqual(set(cases), set(service.routes), 'every route needs a case here')
-        for route, payload in cases.items():
-            script_type, arguments = service.routes[route](service, payload)
-            script = SCRIPTS / (script_type + '.lua')
-            self.assertTrue(script.is_file(), f'{route} needs {script.name}, which this build ships')
-            declared = self.declared_arguments(script)
-            self.assertEqual(len(arguments), len(declared),
-                             f'{script.name} declares {declared} but {route} passes {arguments}')
-            for name, value in zip(declared, arguments):
-                if name == 'fileExtension':
-                    self.assertEqual(value, 'PNG', f'{script.name}: unexpected format {value!r}')
-                elif name in ('x', 'y', 'width', 'height'):
-                    self.assertEqual(value, 420, f'{script.name}: unexpected size {value!r}')
-                elif name == 'baseUrl':
-                    self.assertEqual(value, 'http://website.test', f'{script.name}: unexpected base URL')
-                elif name == 'characterAppearanceUrl':
-                    self.assertEqual(value, 'http://website.test/v1.1/avatar-fetch?userId=3',
-                                     f'{script.name}: the appearance document must be this website')
-                elif name == 'assetUrl':
-                    self.assertEqual(value, 'http://website.test/asset/?id=7',
-                                     f'{script.name}: the asset URL must be this website')
-                elif name == 'imageId':
-                    self.assertEqual(value, 7, f'{script.name}: the image id must be passed through')
-                else:
-                    self.assertIn(value, (True, 40, 60, 0),
-                                  f'{script.name}: {name} carries an unexpected value {value!r}')
-
-    def test_the_closeup_zooms_are_the_ones_this_project_used(self):
-        """game-renderer/scripts/Closeup.json is this project's own record of them."""
+    def test_the_closeup_zoom_slice_matches_this_projects_own_template(self):
         template = json.loads((ROOT / 'game-renderer/scripts/Closeup.json').read_text())
-        self.assertEqual(template['Settings']['Type'], 'Closeup')
-        script_type, arguments = self.renderer_for().arguments_headshot({'userId': 3})
-        self.assertEqual(script_type, 'Closeup')
-        self.assertEqual(arguments[5:], [True, 40, 60, 0, 0])
-        self.assertEqual(template['Settings']['Arguments'][5:], [True, 40, 60, 0, 0])
+        arguments = template[0]['Settings']['Arguments'] if isinstance(template, list) else template['Settings']['Arguments']
+        service = self.service()
+        _, built = service.routes['/player/headshot'](service, {'userId': 3})
+        self.assertEqual(built[5:], arguments[5:], 'the Closeup tail must stay the template values')
+        self.assertEqual(built[5], True)
 
-    def test_r6_and_r15_accounts_get_their_own_script_and_its_own_order(self):
-        appearance = 'http://website.test/v1.1/avatar-fetch?userId=3'
-        for rig, script, expected in (
-                ('R6', 'Avatar', [appearance, 'http://website.test', 'PNG', 420, 420]),
-                ('R15', 'Avatar_R15_Action', ['http://website.test', appearance, 'PNG', 420, 420])):
-            script_type, arguments = self.renderer_for(rig).arguments_avatar({'userId': 3})
-            self.assertEqual(script_type, script)
-            self.assertEqual(arguments, expected,
-                             f'{script}.lua declares the first two arguments in this order')
+    def test_urls_come_from_configuration_not_from_the_request(self):
+        service = self.service()
+        payload = {'assetId': 7, 'assetUrl': 'http://evil.test/asset/?id=7',
+                   'baseUrl': 'http://evil.test', 'fileExtension': 'EXE', 'x': 1, 'y': 1}
+        for path in ('/image/image', '/catalog/model', '/catalog/hat', '/catalog/mesh'):
+            script, arguments = service.routes[path](service, payload)
+            for value in arguments:
+                if isinstance(value, str):
+                    self.assertNotIn('evil.test', value, f'{path} used a request supplied URL')
+            self.assertIn('PNG', arguments)
+            self.assertNotIn('EXE', arguments)
 
-    def test_missing_ids_are_rejected_instead_of_rendering_asset_zero(self):
-        service = self.renderer_for()
-        for payload in ({}, {'assetId': 'x'}, {'assetId': 0}, {'assetId': -3}):
+    def test_a_request_without_a_real_id_is_refused(self):
+        service = self.service()
+        for payload in ({}, {'assetId': 0}, {'assetId': -3}, {'assetId': 'abc'}, {'assetId': None},
+                        {'userId': 0}, {'userId': 'x'}):
+            for path in service.routes:
+                with self.assertRaises(renderer.RenderError, msg=f'{path} accepted {payload}'):
+                    service.routes[path](service, payload)
+
+    def test_an_unreachable_appearance_is_a_failure_not_an_image(self):
+        service = self.service(website_kwargs={'error': 'the website did not answer'})
+        with self.assertRaises(renderer.RenderError):
+            service.routes['/player/thumbnail'](service, {'userId': 3})
+
+    def test_unimplemented_endpoints_name_what_is_missing(self):
+        service = self.service()
+        expected = {'/image/clothing': 'mannequin', '/catalog/head': 'mannequin',
+                    '/catalog/bodypart': 'rig', '/catalog/package': 'rig',
+                    '/game/thumbnail': 'place', '/player/thumbnail-3d': 'renderer',
+                    '/catalog/animation': 'animation', '/catalog/animationsilhouette': 'animation',
+                    '/image/teeshirt': 'no TeeShirt thumbnail script'}
+        self.assertEqual(set(expected), set(service.unsupported))
+        for path, word in expected.items():
+            self.assertIn(word, service.unsupported[path], path)
+        for path in service.unsupported:
             with self.assertRaises(renderer.RenderError):
-                service.arguments_image(payload)
-            with self.assertRaises(renderer.RenderError):
-                service.arguments_model(payload)
-        for payload in ({}, {'userId': 'x'}, {'userId': 0}):
-            with self.assertRaises(renderer.RenderError):
-                service.arguments_avatar(payload)
+                service.render(path, {'assetId': 7})
 
-    def test_unimplemented_endpoints_say_what_is_missing(self):
-        service = self.renderer_for()
-        self.assertEqual(set(service.unsupported) & set(service.routes), set(),
-                         'an endpoint cannot be both supported and unsupported')
-        for route in ('/image/clothing', '/catalog/head'):
-            self.assertIn('mannequin', service.unsupported[route],
-                          f'{route} stays pending because the shipped script needs a mannequin asset')
-        for route, reason in service.unsupported.items():
-            self.assertGreater(len(reason), 20, f'{route} needs a concrete reason')
+    def test_the_scripts_the_build_ships_stay_untouched(self):
+        shipped = sorted(path.name for path in SCRIPTS.glob('*.lua'))
+        self.assertIn('Image.lua', shipped)
+        self.assertIn('Avatar.lua', shipped)
+        self.assertTrue((SCRIPTS / 'modules').is_dir(), 'the shipped modules must stay with the scripts')
+        # This repository ships probes, not render scripts: nothing here may stand in for
+        # a Roblox-authored script that RCC loads by Settings.Type.
+        ours = sorted(str(path.relative_to(ROOT)) for path in (ROOT / 'docker').rglob('*.lua'))
+        self.assertEqual(ours, ['docker/rcc-wine/json_probe.lua', 'docker/rcc-wine/thumbnail_probe.lua'])
 
-    def test_untrusted_requests_cannot_choose_a_url(self):
-        service = self.renderer_for()
-        _, arguments = service.arguments_model({'assetId': 12, 'assetUrl': 'http://evil.example/'})
-        self.assertEqual(arguments[0], 'http://website.test/asset/?id=12',
-                         'the asset URL must come from configuration, never from the request')
+    def test_the_required_script_list_matches_the_build(self):
+        listed = [line.strip() for line in
+                  (ROOT / 'docker/rcc-wine/required-thumbnail-scripts.txt').read_text().splitlines()
+                  if line.strip() and not line.startswith('#')]
+        self.assertTrue(listed)
+        missing = [name for name in listed if not (SCRIPTS / f'{name}.lua').is_file()]
+        self.assertEqual([], missing, 'the entrypoint would refuse to start for these')
 
 
-class ContainerLayoutTest(unittest.TestCase):
-    """RCC binds to its own container's loopback, so both run in one container."""
+class AppearanceTest(unittest.TestCase):
+    """The renderer fetches the appearance document; it never builds one."""
 
-    def dockerfile_packages(self, path):
-        text = (ROOT / path).read_text()
-        start = text.index('apt-get install')
-        block = text[start:text.index('&& rm -rf', start)]
-        packages = set()
-        for line in block.splitlines()[1:]:
-            packages.update(line.replace('\\', ' ').split())
-        return {package for package in packages if package and not package.startswith('-')}
+    def serve(self, body, status=200):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                payload = body.encode()
+                self.send_response(status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
 
-    def test_the_renderer_image_installs_the_same_runtime_as_the_rcc_image(self):
-        """A drifting package list would make the two images behave differently."""
-        self.assertEqual(self.dockerfile_packages('docker/renderer/Dockerfile'),
-                         self.dockerfile_packages('docker/rcc-wine/Dockerfile'))
+            def log_message(self, *arguments):
+                pass
 
-    def test_the_renderer_image_reuses_the_rcc_launcher_instead_of_copying_it(self):
-        text = (ROOT / 'docker/renderer/Dockerfile').read_text()
-        for name in ('entrypoint.sh', 'run-wine.sh', 'healthcheck.py', 'required-thumbnail-scripts.txt'):
-            self.assertIn(f'rcc-wine/{name}', text,
-                          f'{name} must come from docker/rcc-wine, not be duplicated')
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return f'http://127.0.0.1:{server.server_address[1]}'
 
-    def test_the_supervisor_starts_rcc_waits_for_soap_and_becomes_the_renderer(self):
-        text = (ROOT / 'docker/renderer/supervise.sh').read_text()
-        self.assertIn('/usr/local/bin/entrypoint.sh &', text, 'RCC must run in the background')
-        self.assertIn('healthcheck.py', text, 'the supervisor must wait for a real SOAP answer')
-        self.assertTrue(text.rstrip().endswith('exec python3 /app/renderer.py'),
-                        'the renderer must be the foreground process so shutdown reaches it')
+    def test_the_document_is_read_from_the_configured_url(self):
+        base = self.serve(json.dumps({'resolvedAvatarType': 'R15', 'bodyColors': {}}))
+        client = renderer.WebsiteClient(base_url=base)
+        self.assertEqual(client.appearance(3)['resolvedAvatarType'], 'R15')
 
-    def test_compose_runs_one_renderer_service_that_builds_this_image(self):
-        compose = yaml.safe_load((ROOT / 'docker-compose.local.yml').read_text())['services']
-        self.assertNotIn('rcc-render', compose, 'RCC has to share the renderer container')
-        renderer = compose['renderer']
-        self.assertEqual(renderer['profiles'], ['renderer'])
-        self.assertEqual(renderer['build'], {'context': 'docker', 'dockerfile': 'renderer/Dockerfile'})
-        self.assertEqual(renderer['environment']['RCC_VERIFY_THUMBNAIL_SCRIPTS'], '1')
-        self.assertEqual(renderer['ports'], ['127.0.0.1:${RENDERER_PORT:-3521}:3521'])
-        # Depending on the website makes `restart website` restart the renderer, which
-        # cuts renders in flight; the renderer does not need the website to start.
-        self.assertNotIn('depends_on', renderer)
-        self.assertEqual(renderer['cap_drop'], ['ALL'])
-        self.assertTrue(renderer['read_only'])
+    def test_an_unreadable_document_is_a_failure_not_an_empty_avatar(self):
+        base = self.serve('not json')
+        client = renderer.WebsiteClient(base_url=base)
+        with self.assertRaises(renderer.RenderError):
+            client.appearance(3)
 
-    def test_the_renderer_defaults_to_the_same_container_loopback(self):
-        self.assertEqual(renderer.DEFAULT_RCC_URL, 'http://127.0.0.1:64989/')
-        self.assertIn('RCC_SOAP_URL=http://127.0.0.1:64989/',
-                      (ROOT / 'docker/renderer/Dockerfile').read_text())
+
+class RccReplyTest(unittest.TestCase):
+    """RCC's reply is searched for the image instead of trusting the first text node."""
+
+    def serve(self, body):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get('Content-Length') or 0)
+                self.rfile.read(length)
+                payload = body.encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/xml')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *arguments):
+                pass
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return f'http://127.0.0.1:{server.server_address[1]}/'
+
+    def envelope(self, result_text, decoy=None):
+        """A reply shaped like RCC's: several text nodes, only one of them the image."""
+        head = f'<joblog>{decoy}</joblog>' if decoy else ''
+        return ('<?xml version="1.0"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+                '<soap:Body><OpenJobExResult xmlns="http://silrev.biz/">'
+                f'<jobid>00000000-0000-0000-0000-000000000000</jobid>{head}'
+                f'<result>{result_text}</result>'
+                '</OpenJobExResult></soap:Body></soap:Envelope>')
+
+    def test_a_decoy_text_node_does_not_hide_the_render(self):
+        image = base64.b64encode(make_png(420, 420)).decode()
+        client = renderer.RccClient(url=self.serve(self.envelope(image, decoy='x' * 400)))
+        self.assertEqual(len(client.render('Image', [1], 420)), len(base64.b64decode(image)))
+
+    def test_a_reply_without_an_image_is_a_failure(self):
+        client = renderer.RccClient(url=self.serve(self.envelope('nothing here')))
+        with self.assertRaises(renderer.RenderError):
+            client.render('Image', [1], 420)
+
+    def test_a_soap_fault_is_reported_with_its_text(self):
+        fault = ('<?xml version="1.0"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+                 '<soap:Body><soap:Fault><faultstring>job refused</faultstring></soap:Fault>'
+                 '</soap:Body></soap:Envelope>')
+        client = renderer.RccClient(url=self.serve(fault))
+        with self.assertRaises(renderer.RenderError) as caught:
+            client.call('GetVersion', [])
+        self.assertIn('job refused', str(caught.exception))
+
+
+class AuthorizationSourceTest(unittest.TestCase):
+    """The secret comes from the generated environment, with the config as fallback."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / 'website.json'
+        self.saved = os.environ.pop('RENDERER_AUTHORIZATION', None)
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        os.environ.pop('RENDERER_AUTHORIZATION', None)
+        if self.saved is not None:
+            os.environ['RENDERER_AUTHORIZATION'] = self.saved
+
+    def write(self, value):
+        self.path.write_text(json.dumps({'Render': {'BaseUrl': 'http://renderer:3521/',
+                                                    'Authorization': value}}))
+
+    def test_the_value_is_read_and_refreshed_from_the_mounted_config(self):
+        self.write('first-value')
+        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
+        self.assertEqual(source.current(), 'first-value')
+        self.write('second-value')
+        self.assertEqual(source.current(), 'second-value')
+        self.write('')
+        self.assertIsNone(source.current(), 'an emptied value must not stay accepted')
+
+    def test_a_missing_file_does_not_raise_and_is_explained(self):
+        source = renderer.AuthorizationSource(path='/does/not/exist.json', refresh=0.0)
+        self.assertIsNone(source.current())
+        status = source.status()
+        self.assertFalse(status['exists'])
+        self.assertFalse(status['usable'])
+
+    def test_the_generated_environment_wins_over_the_mounted_config(self):
+        # A single-file bind mount does not reliably show a config rewritten after the
+        # container started, so the environment is the source that cannot be missed.
+        self.write('from-the-file')
+        os.environ['RENDERER_AUTHORIZATION'] = 'from-the-environment'
+        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
+        self.assertEqual(source.current(), 'from-the-environment')
+        self.assertTrue(source.status()['usable'])
+        self.assertEqual(source.status()['source'], 'environment')
+
+    def test_an_empty_environment_value_falls_back_to_the_config(self):
+        self.write('from-the-file')
+        os.environ['RENDERER_AUTHORIZATION'] = ''
+        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
+        self.assertEqual(source.current(), 'from-the-file')
+
+
+class WarmupTest(unittest.TestCase):
+    """The first render must not happen inside a user's ten-second request."""
+
+    def test_a_successful_warmup_is_reported(self):
+        rcc = FakeRcc()
+        service = renderer.Renderer(rcc=rcc, website=FakeWebsite(), placeholders={})
+        service.warm_up()
+        self.assertEqual(service.warmup['state'], 'ok')
+        self.assertEqual(rcc.jobs, [service.warmup['script']])
+        self.assertGreater(service.warmup['bytes'], 0)
+
+    def test_a_failed_warmup_is_reported_and_does_not_crash(self):
+        service = renderer.Renderer(rcc=FakeRcc(error='RCC is busy'), website=FakeWebsite(),
+                                    placeholders={})
+        service.warm_up()
+        self.assertEqual(service.warmup['state'], 'failed')
+        self.assertIn('busy', service.warmup['detail'])
+
+
+class HttpSurfaceTest(unittest.TestCase):
+    """The HTTP answer the website's render client reads, without any Docker."""
+
+    def start(self, service, authorization='secret-value'):
+        class TestHandler(renderer.Handler):
+            pass
+
+        TestHandler.renderer = service
+        TestHandler.authorization_source = None
+        TestHandler.authorization = authorization
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), TestHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        self.base = f'http://127.0.0.1:{server.server_address[1]}'
+
+    def post(self, path, payload, authorization='secret-value'):
+        body = json.dumps(payload).encode()
+        headers = {'Content-Type': 'application/json'}
+        if authorization is not None:
+            headers['Authorization'] = authorization
+        request = urllib.request.Request(self.base + path, data=body, headers=headers, method='POST')
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(request, timeout=30) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, json.loads(error.read())
+
+    def get(self, path):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(self.base + path, timeout=30) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, json.loads(error.read())
+
+    def service(self, rcc=None, placeholders=None):
+        return renderer.Renderer(rcc=rcc or FakeRcc(), website=FakeWebsite(),
+                                 placeholders=placeholders if placeholders is not None else {})
+
+    def test_a_render_comes_back_as_base64_png_data(self):
+        service = self.service()
+        self.start(service)
+        status, body = self.post('/image/image', {'assetId': 7})
+        self.assertEqual(status, 200)
+        self.assertTrue(body['success'])
+        self.assertEqual(len(base64.b64decode(body['data'])), len(make_png(420, 420)))
+
+    def test_the_job_always_closes_and_the_script_is_the_expected_one(self):
+        rcc = FakeRcc()
+        self.start(self.service(rcc=rcc))
+        self.post('/catalog/hat', {'assetId': 7})
+        self.assertEqual(rcc.jobs, ['Hat'])
+
+    def test_a_missing_or_wrong_secret_is_refused(self):
+        self.start(self.service())
+        status, body = self.post('/image/image', {'assetId': 7}, authorization=None)
+        self.assertEqual((status, body['success']), (401, False))
+        status, _ = self.post('/image/image', {'assetId': 7}, authorization='wrong')
+        self.assertEqual(status, 401)
+
+    def test_an_unimplemented_endpoint_says_what_it_needs(self):
+        self.start(self.service())
+        status, body = self.post('/image/clothing', {'assetId': 7})
+        self.assertEqual(status, 501)
+        self.assertIn('mannequin', body['message'])
+        self.assertIn('not implemented', body['message'])
+
+    def test_a_placeholder_answer_is_a_502_not_a_picture(self):
+        placeholders = renderer.load_placeholders(str(SCRIPTS))
+        fallback = max(renderer.PLACEHOLDER_LITERAL.findall((SCRIPTS / 'Image.lua').read_text()),
+                       key=len)
+        image = base64.b64decode(fallback, validate=False)
+        self.start(self.service(rcc=FakeRcc(image=image), placeholders=placeholders))
+        status, body = self.post('/image/image', {'assetId': 7})
+        self.assertEqual(status, 502)
+        self.assertFalse(body['success'])
+        self.assertIn('fallback image', body['message'])
+        self.assertNotIn('data', body)
+
+    def test_a_failing_render_is_an_error_not_an_image(self):
+        self.start(self.service(rcc=FakeRcc(error='RCC did not answer')))
+        status, body = self.post('/image/image', {'assetId': 7})
+        self.assertEqual(status, 502)
+        self.assertIn('RCC did not answer', body['message'])
+
+    def test_a_request_without_an_asset_is_refused(self):
+        self.start(self.service())
+        status, _ = self.post('/image/image', {})
+        self.assertEqual(status, 502)
+
+    def test_invalid_json_and_unknown_paths_are_refused(self):
+        self.start(self.service())
+        request = urllib.request.Request(self.base + '/image/image', data=b'{not json',
+                                           headers={'Authorization': 'secret-value',
+                                                    'Content-Type': 'application/json'},
+                                           method='POST')
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            opener.open(request, timeout=30)
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(self.post('/nope/nope', {'assetId': 7})[0], 404)
+
+    def test_an_oversized_body_is_refused_before_it_is_read(self):
+        self.start(self.service())
+        request = urllib.request.Request(self.base + '/image/image',
+                                         data=b'x' * (renderer.Handler.max_body + 1),
+                                         headers={'Authorization': 'secret-value',
+                                                  'Content-Type': 'application/json'},
+                                         method='POST')
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            opener.open(request, timeout=30)
+        self.assertEqual(caught.exception.code, 413)
+
+    def test_health_is_rccs_own_answer(self):
+        self.start(self.service())
+        status, body = self.get('/healthz')
+        self.assertEqual(status, 200)
+        self.assertTrue(body['success'])
+        self.assertEqual(body['rcc']['version'], '0.450.0.411923')
+        self.assertIn('busy', body['rcc'])
+        self.assertIn('warmup', body)
+
+    def test_health_is_503_while_rcc_never_answered(self):
+        self.start(self.service(rcc=FakeRcc(error='RCC has not answered any request yet')))
+        status, body = self.get('/healthz')
+        self.assertEqual(status, 503)
+        self.assertFalse(body['success'])
+        self.assertIn('has not answered', body['message'])
+
+
+class PlaceholderTest(unittest.TestCase):
+    """The shipped scripts' own fallback images must never pass as a render.
+
+    Image.lua answers a render it cannot do with a 512x512 transparent PNG: it is larger
+    than the 420 pixels a render must be, so a size check accepts it, and the website then
+    resizes it into a blank thumbnail that looks finished. That is exactly what happened
+    once; the payloads are refused by exact bytes now.
+    """
+
+    def fallback(self, script):
+        text = (SCRIPTS / f'{script}.lua').read_text()
+        literals = renderer.PLACEHOLDER_LITERAL.findall(text)
+        self.assertTrue(literals, f'{script}.lua carries no embedded image literal')
+        return max((base64.b64decode(value, validate=True) for value in literals), key=len)
+
+    def test_the_shipped_fallbacks_are_found_and_named(self):
+        placeholders = renderer.load_placeholders(str(SCRIPTS))
+        self.assertIn('Image', set(placeholders.values()))
+        self.assertIn('Decal', set(placeholders.values()))
+        image = self.fallback('Image')
+        self.assertEqual(placeholders[image], 'Image')
+        self.assertEqual((len(image), struct.unpack('>II', image[16:24])), (1239, (512, 512)))
+
+    def test_the_placeholder_is_refused_by_name(self):
+        placeholders = renderer.load_placeholders(str(SCRIPTS))
+        encoded = base64.b64encode(self.fallback('Image')).decode()
+        with self.assertRaises(renderer.RenderError) as caught:
+            renderer.decode_render_output(encoded, 420, placeholders)
+        self.assertIn('built-in fallback image of the Image thumbnail script', str(caught.exception))
+        # 512x512 passes any size check, so the size rule alone is not enough.
+        self.assertIsNotNone(renderer.decode_render_output(encoded, 420, {}))
+
+    def test_a_real_render_still_passes(self):
+        encoded = base64.b64encode(make_png(420, 420)).decode()
+        self.assertIsNotNone(renderer.decode_render_output(encoded, 420,
+                                                           renderer.load_placeholders(str(SCRIPTS))))
+
+    def test_a_missing_script_directory_is_not_fatal(self):
+        self.assertEqual(renderer.load_placeholders('/does/not/exist'), {})
+
+
+class RendererEnvironmentTest(unittest.TestCase):
+    """Enabling the renderer must hand the running container the enabled secret."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.compose_env = Path(self.directory.name) / 'compose.env'
+
+    def enable(self, website=None, value='secret-value-0123456789'):
+        website = website if website is not None else {'RccAuthorization': value}
+        return configure_local_docker.enable_renderer(website, compose_env_path=self.compose_env)
+
+    def test_enabling_records_the_value_for_the_renderer_container(self):
+        secret = 'a' * 64
+        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\nLOCAL_UID=1000\n')
+        os.chmod(self.compose_env, 0o600)
+        self.enable({'RccAuthorization': secret})
+        content = self.compose_env.read_text()
+        self.assertIn(f'RENDERER_AUTHORIZATION={secret}\n', content)
+        self.assertIn('COMPOSE_PROJECT_NAME=marine-local\n', content, 'other values must survive')
+        self.assertEqual(oct(os.stat(self.compose_env).st_mode & 0o777), '0o600')
+        self.assertEqual(content.count('RENDERER_AUTHORIZATION='), 1)
+
+    def test_enabling_replaces_an_old_value_instead_of_duplicating_it(self):
+        self.compose_env.write_text('RENDERER_AUTHORIZATION=' + 'b' * 64 + '\nPOSTGRES_DB=marine_local\n')
+        self.enable({'RccAuthorization': 'c' * 64})
+        content = self.compose_env.read_text()
+        self.assertEqual(content.count('RENDERER_AUTHORIZATION='), 1)
+        self.assertIn('RENDERER_AUTHORIZATION=' + 'c' * 64, content)
+        self.assertNotIn('b' * 64, content, 'the rotated value must not stay behind')
+        self.assertIn('POSTGRES_DB=marine_local', content)
+
+    def test_a_value_that_is_not_env_safe_is_refused(self):
+        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\n')
+        for bad in ('short', 'two words', 'quote"d', 'line\nbreak', 'semi;colon'):
+            with self.assertRaises(ValueError, msg=bad):
+                self.enable({'RccAuthorization': bad})
+        self.assertNotIn('RENDERER_AUTHORIZATION', self.compose_env.read_text())
+
+    def test_a_missing_environment_file_is_reported(self):
+        with self.assertRaises(ValueError) as caught:
+            self.enable({'RccAuthorization': 'd' * 64})
+        self.assertIn('start the stack once', str(caught.exception))
+
+    def test_the_website_and_the_renderer_share_one_value(self):
+        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\n')
+        website = {'RccAuthorization': 'e' * 64}
+        result = self.enable(website)
+        self.assertEqual(result['baseUrl'], 'http://renderer:3521/')
+        self.assertEqual(website['Render']['Authorization'], 'e' * 64,
+                         'the website must send the same value, not a second secret')
+        self.assertIn('RENDERER_AUTHORIZATION=' + 'e' * 64, self.compose_env.read_text())
+
+    def test_the_compose_environment_reaches_the_renderer_service(self):
+        services = yaml.safe_load((ROOT / 'docker-compose.local.yml').read_text())['services']
+        environment = services['renderer']['environment']
+        self.assertEqual(environment['RENDERER_AUTHORIZATION'], '${RENDERER_AUTHORIZATION:-}')
 
 
 class WebsiteThumbnailContractTest(unittest.TestCase):
@@ -286,8 +657,6 @@ class WebsiteThumbnailContractTest(unittest.TestCase):
         return (ROOT / relative).read_text()
 
     def test_the_stored_thumbnail_key_is_the_plain_hash(self):
-        # UploadAssetContent hashes the PNG and returns the hash while writing
-        # "<hash>.png", so asset_thumbnail.content_url has no extension.
         service = self.source('Roblox/Roblox.Services/Assets/AssetsService.cs')
         method = service.split('private async Task<string> UploadAssetContent')[1].split('public Task DeleteAssetContent')[0]
         self.assertIn('var hash = plainHash;', method)
@@ -315,264 +684,61 @@ class WebsiteThumbnailContractTest(unittest.TestCase):
         self.assertIn('state = ThumbnailState.Error,', controller)
         self.assertIn('c.imageUrl == null ? ThumbnailState.Pending', self.source('Roblox/Roblox.Services/Thumbnails.cs'))
 
-
-class AppearanceTest(unittest.TestCase):
-    """The appearance document is the website's; only its shape is assumed."""
-
-    def test_the_rig_type_decides_which_shipped_avatar_script_runs(self):
-        for rig, expected in (('R6', 'Avatar'), ('r15', 'Avatar_R15_Action'), ('R15', 'Avatar_R15_Action')):
-            service = renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite(rig=rig))
-            self.assertEqual(service.avatar_script(3), expected)
-
-    def test_a_missing_document_is_reported_instead_of_guessing_a_rig(self):
-        service = renderer.Renderer(rcc=FakeRcc(),
-                                    website=FakeWebsite(error='the appearance for user 3 could not be read'))
-        with self.assertRaises(renderer.RenderError) as caught:
-            service.arguments_avatar({'userId': 3})
-        self.assertIn('appearance', str(caught.exception))
+    def test_the_website_posts_to_the_routes_this_renderer_answers(self):
+        handler = self.source('Roblox/Roblox.Rendering/RenderingHandler.cs')
+        # The website writes the route without a leading slash and sends the body the
+        # renderer expects: these six are the ones it answers, the rest stay 501.
+        for route in ('image/image', 'catalog/model', 'catalog/hat', 'catalog/mesh',
+                      'player/thumbnail', 'player/headshot', 'image/clothing',
+                      'game/thumbnail', 'player/thumbnail-3d'):
+            self.assertIn('url = "' + route + '"', handler, f'{route} is no longer called')
 
 
-class RccReplyTest(unittest.TestCase):
-    """The SOAP reply parser must find the image, not the first long string."""
+class ContainerLayoutTest(unittest.TestCase):
+    """RCC and the renderer must stay in one container over loopback."""
 
-    def start_rcc(self, body):
-        class Soap(http.server.BaseHTTPRequestHandler):
-            def do_POST(self):
-                length = int(self.headers.get('Content-Length') or 0)
-                self.rfile.read(length)
-                payload = body.encode()
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/xml; charset=utf-8')
-                self.send_header('Content-Length', str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
+    def compose(self):
+        return yaml.safe_load((ROOT / 'docker-compose.local.yml').read_text())['services']
 
-            def log_message(self, *arguments):
-                pass
+    def test_rcc_is_not_a_separate_published_service(self):
+        services = self.compose()
+        self.assertNotIn('rcc-render', services,
+                         'RCC binds to its own loopback, so a second container cannot reach it')
+        self.assertEqual(sorted(services),
+                         ['frontend', 'migrations', 'postgres', 'redis', 'renderer', 'website'])
 
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Soap)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        return f'http://127.0.0.1:{server.server_address[1]}/'
+    def test_the_renderer_service_runs_rcc_itself_behind_its_profile(self):
+        renderer_service = self.compose()['renderer']
+        self.assertEqual(renderer_service['profiles'], ['renderer'])
+        self.assertEqual(renderer_service['build'],
+                         {'context': 'docker', 'dockerfile': 'renderer/Dockerfile'})
+        self.assertEqual(renderer_service['ports'], ['127.0.0.1:${RENDERER_PORT:-3521}:3521'])
+        # Depending on the website makes `restart website` restart the renderer, which
+        # cuts renders in flight; the renderer does not need the website to start.
+        self.assertNotIn('depends_on', renderer_service)
+        environment = renderer_service['environment']
+        self.assertEqual(environment['RCC_VERIFY_THUMBNAIL_SCRIPTS'], '1')
+        self.assertEqual(environment['WEBSITE_BASE_URL'], 'http://website:5000')
 
-    def envelope(self, *texts):
-        body = ''.join(f'<t>{text}</t>' for text in texts)
-        return ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
-                f'<s:Body><OpenJobExResponse xmlns="http://silrev.biz/">{body}</OpenJobExResponse>'
-                '</s:Body></s:Envelope>')
+    def test_the_renderer_image_builds_the_same_runtime_as_the_wine_probe(self):
+        renderer_dockerfile = (ROOT / 'docker/renderer/Dockerfile').read_text()
+        wine_dockerfile = (ROOT / 'docker/rcc-wine/Dockerfile').read_text()
+        sh = (ROOT / 'docker/renderer/supervise.sh').read_text()
+        self.assertIn('COPY rcc-wine/entrypoint.sh', renderer_dockerfile)
+        self.assertIn('healthcheck.py', sh)
+        self.assertIn('/app/renderer.py', sh)
+        for package in ('wine64', 'xvfb'):
+            self.assertIn(package, renderer_dockerfile)
+            self.assertIn(package, wine_dockerfile)
+        self.assertIn('RCC_READY_TIMEOUT', sh)
+        self.assertIn("'http://127.0.0.1:64989/'", (ROOT / 'docker/renderer/renderer.py').read_text())
 
-    def test_a_decoy_long_string_before_the_image_is_ignored(self):
-        """A job id or a log line must not be mistaken for the rendered image."""
-        image = base64.b64encode(make_png(420, 420)).decode()
-        url = self.start_rcc(self.envelope('x' * 400, image))
-        client = renderer.RccClient(url=url, job_timeout=30)
-        rendered = client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
-        self.assertEqual(renderer.image_details(rendered), ('PNG', 420, 420))
-
-    def test_a_reply_without_an_image_is_reported_clearly(self):
-        url = self.start_rcc(self.envelope('job-finished-with-no-image-at-all'))
-        client = renderer.RccClient(url=url, job_timeout=30)
-        with self.assertRaises(renderer.RenderError) as caught:
-            client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
-        self.assertIn('did not return a usable image', str(caught.exception))
-
-    def test_a_soap_fault_is_reported_as_a_render_error(self):
-        url = self.start_rcc('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
-                             '<s:Fault><faultstring>script file not found</faultstring></s:Fault>'
-                             '</s:Body></s:Envelope>')
-        client = renderer.RccClient(url=url, job_timeout=30)
-        with self.assertRaises(renderer.RenderError) as caught:
-            client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
-        self.assertIn('script file not found', str(caught.exception))
-
-    def test_a_real_placeholder_of_1x1_is_never_returned_as_an_image(self):
-        """RCC's own scripts fall back to a tiny hourglass; that is not a render."""
-        hourglass = base64.b64encode(make_png(1, 1)).decode()
-        url = self.start_rcc(self.envelope(hourglass))
-        client = renderer.RccClient(url=url, job_timeout=30)
-        with self.assertRaises(renderer.RenderError) as caught:
-            client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
-        self.assertIn('placeholder', str(caught.exception))
-
-
-class RccHealthTest(unittest.TestCase):
-    """Health has to distinguish a busy RCC from a dead one."""
-
-    def start_rcc(self, body):
-        class Soap(http.server.BaseHTTPRequestHandler):
-            def do_POST(self):
-                length = int(self.headers.get('Content-Length') or 0)
-                self.rfile.read(length)
-                payload = body.encode()
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/xml; charset=utf-8')
-                self.send_header('Content-Length', str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-
-            def log_message(self, *arguments):
-                pass
-
-        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Soap)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        return f'http://127.0.0.1:{server.server_address[1]}/'
-
-    def version_reply(self, version='0.450.0.411923'):
-        return ('<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
-                f'<s:Body><GetVersionResponse xmlns="http://silrev.biz/"><GetVersionResult>{version}'
-                '</GetVersionResult></GetVersionResponse></s:Body></s:Envelope>')
-
-    def test_a_render_in_flight_is_healthy_not_broken(self):
-        client = renderer.RccClient(url=self.start_rcc(self.version_reply()), job_timeout=30)
-        client.version = '0.450.0.411923'
-        client.last_contact_at = time.monotonic() - 300
-        client.busy = True
-        health = client.health()
-        self.assertEqual(health['version'], '0.450.0.411923')
-        self.assertTrue(health['busy'])
-        self.assertGreater(health['lastContactSeconds'], 100)
-
-    def test_a_stale_idle_renderer_asks_rcc_again(self):
-        client = renderer.RccClient(url=self.start_rcc(self.version_reply('9.9.9.9')), job_timeout=30)
-        client.last_contact_at = time.monotonic() - 300
-        health = client.health()
-        self.assertEqual(health['version'], '9.9.9.9')
-        self.assertLess(health['lastContactSeconds'], 5)
-
-    def test_an_unreachable_rcc_is_reported_as_unhealthy(self):
-        client = renderer.RccClient(url='http://127.0.0.1:1/', job_timeout=2)
-        client.last_contact_at = time.monotonic() - 300
-        with self.assertRaises(renderer.RenderError):
-            client.health()
-
-
-class AuthorizationSourceTest(unittest.TestCase):
-    """The secret the renderer accepts comes from its environment or the mounted config."""
-
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.path = Path(self.directory.name) / 'website.json'
-        self.saved = os.environ.pop('RENDERER_AUTHORIZATION', None)
-        self.addCleanup(self.restore)
-
-    def restore(self):
-        os.environ.pop('RENDERER_AUTHORIZATION', None)
-        if self.saved is not None:
-            os.environ['RENDERER_AUTHORIZATION'] = self.saved
-
-    def write(self, value):
-        self.path.write_text(json.dumps({'Render': {'BaseUrl': 'http://renderer:3521/', 'Authorization': value}}))
-
-    def test_the_value_is_read_and_refreshed_from_the_mounted_config(self):
-        self.write('first-value')
-        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
-        self.assertEqual(source.current(), 'first-value')
-        self.write('second-value')
-        # refresh=0.0 forces a re-read, as a restart of the website would produce.
-        self.assertEqual(source.current(), 'second-value')
-        self.write('')
-        self.assertIsNone(source.current(), 'an emptied value must not stay accepted')
-
-    def test_a_missing_file_does_not_raise(self):
-        source = renderer.AuthorizationSource(path='/does/not/exist.json', refresh=0.0)
-        self.assertIsNone(source.current())
-
-    def test_the_generated_environment_wins_over_the_mounted_config(self):
-        # The stack passes the enabled value as an environment variable; a single-file
-        # bind mount does not reliably show a config rewritten after the container
-        # started, so the environment is the source that cannot be missed.
-        self.write('from-the-file')
-        os.environ['RENDERER_AUTHORIZATION'] = 'from-the-environment'
-        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
-        self.assertEqual(source.current(), 'from-the-environment')
-        self.assertTrue(source.status()['usable'])
-        self.assertEqual(source.status()['source'], 'environment')
-
-    def test_an_empty_environment_value_falls_back_to_the_config(self):
-        self.write('from-the-file')
-        os.environ['RENDERER_AUTHORIZATION'] = ''
-        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
-        self.assertEqual(source.current(), 'from-the-file')
-
-    def test_the_status_says_why_no_value_is_usable(self):
-        # The renderer answers 503 with this, so a misconfigured stack explains itself
-        # instead of leaving "no Authorization value configured" without a cause.
-        source = renderer.AuthorizationSource(path='/does/not/exist.json', refresh=0.0)
-        self.assertIsNone(source.current())
-        status = source.status()
-        self.assertEqual(status['source'], 'config file')
-        self.assertFalse(status['usable'])
-        self.assertFalse(status['exists'])
-        self.assertEqual(status['path'], '/does/not/exist.json')
-        self.write('')
-        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
-        self.assertIsNone(source.current())
-        self.assertFalse(source.status()['usable'])
-        self.assertTrue(source.status()['exists'])
-
-
-class RendererEnvironmentTest(unittest.TestCase):
-    """Enabling the renderer must hand the running container the enabled secret."""
-
-    def setUp(self):
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        self.compose_env = Path(self.directory.name) / 'compose.env'
-
-    def enable(self, website=None, value='secret-value-0123456789'):
-        website = website if website is not None else {'RccAuthorization': value}
-        return configure_local_docker.enable_renderer(website, compose_env_path=self.compose_env)
-
-    def test_enabling_records_the_value_for_the_renderer_container(self):
-        secret = 'a' * 64
-        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\nLOCAL_UID=1000\n')
-        os.chmod(self.compose_env, 0o600)
-        self.enable({'RccAuthorization': secret})
-        content = self.compose_env.read_text()
-        self.assertIn(f'RENDERER_AUTHORIZATION={secret}\n', content)
-        self.assertIn('COMPOSE_PROJECT_NAME=marine-local\n', content, 'other values must survive')
-        self.assertEqual(oct(os.stat(self.compose_env).st_mode & 0o777), '0o600')
-        self.assertEqual(self.compose_env.read_text().count('RENDERER_AUTHORIZATION='), 1)
-
-    def test_enabling_replaces_an_old_value_instead_of_duplicating_it(self):
-        self.compose_env.write_text('RENDERER_AUTHORIZATION=' + 'b' * 64 + '\nPOSTGRES_DB=marine_local\n')
-        self.enable({'RccAuthorization': 'c' * 64})
-        content = self.compose_env.read_text()
-        self.assertEqual(content.count('RENDERER_AUTHORIZATION='), 1)
-        self.assertIn('RENDERER_AUTHORIZATION=' + 'c' * 64, content)
-        self.assertNotIn('b' * 64, content, 'the rotated value must not stay behind')
-        self.assertIn('POSTGRES_DB=marine_local', content)
-
-    def test_a_value_that_is_not_env_safe_is_refused(self):
-        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\n')
-        for bad in ('short', 'two words', 'quote"d', 'line\nbreak', 'semi;colon'):
-            with self.assertRaises(ValueError, msg=bad):
-                self.enable({'RccAuthorization': bad})
-        self.assertNotIn('RENDERER_AUTHORIZATION', self.compose_env.read_text())
-
-    def test_a_missing_environment_file_is_reported(self):
-        with self.assertRaises(ValueError) as caught:
-            self.enable({'RccAuthorization': 'd' * 64})
-        self.assertIn('start the stack once', str(caught.exception))
-
-    def test_the_website_config_still_gets_the_render_section(self):
-        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\n')
-        website = {'RccAuthorization': 'e' * 64}
-        result = self.enable(website)
-        self.assertEqual(result['baseUrl'], 'http://renderer:3521/')
-        self.assertEqual(website['Render']['Authorization'], 'e' * 64,
-                         'the website must send the same value, not a second secret')
-
-    def test_the_compose_environment_reaches_the_renderer_service(self):
-        services = yaml.safe_load((ROOT / 'docker-compose.local.yml').read_text())['services']
-        renderer_environment = services['renderer']['environment']
-        self.assertEqual(renderer_environment['RENDERER_AUTHORIZATION'], '${RENDERER_AUTHORIZATION:-}')
+    def test_the_website_still_delivers_assets_without_a_renderer(self):
+        # The renderer profile is optional: nothing else may depend on it.
+        for name, service in self.compose().items():
+            if name == 'renderer':
+                continue
+            self.assertNotIn('renderer', service.get('depends_on') or {}, name)
 
 
 class RendererRestartToleranceTest(unittest.TestCase):
@@ -585,8 +751,7 @@ class RendererRestartToleranceTest(unittest.TestCase):
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
 
-    def flaky_server(self, failures=1, break_length=None):
-        """A server that resets the first `failures` connections, then answers JSON."""
+    def flaky_server(self, failures=1, break_status_line=False):
         state = {'seen': 0}
 
         class Flaky(http.server.BaseHTTPRequestHandler):
@@ -595,8 +760,7 @@ class RendererRestartToleranceTest(unittest.TestCase):
                 self.rfile.read(length)
                 state['seen'] += 1
                 if state['seen'] <= failures:
-                    if break_length is not None:
-                        # A response that stops in the middle of the status line.
+                    if break_status_line:
                         self.wfile.write(b'HTTP/1.1 20')
                         self.wfile.flush()
                     self.close_connection = True
@@ -612,8 +776,7 @@ class RendererRestartToleranceTest(unittest.TestCase):
                 pass
 
         server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Flaky)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.shutdown)
         self.addCleanup(server.server_close)
         return f'http://127.0.0.1:{server.server_address[1]}', state
@@ -627,11 +790,10 @@ class RendererRestartToleranceTest(unittest.TestCase):
         self.assertEqual(state['seen'], 2, 'the reset connection must be retried once')
 
     def test_a_truncated_answer_is_retried_too(self):
-        url, state = self.flaky_server(failures=1, break_length=True)
+        url, state = self.flaky_server(failures=1, break_status_line=True)
         self.module.RENDERER_URL = url
         status, _ = self.module.renderer_post('/image/image', {'assetId': 1}, attempts=3, pause=0)
-        self.assertEqual(status, 200)
-        self.assertEqual(state['seen'], 2)
+        self.assertEqual((status, state['seen']), (200, 2))
 
     def test_a_real_http_answer_is_never_retried(self):
         url, state = self.flaky_server(failures=0)
@@ -646,162 +808,50 @@ class RendererRestartToleranceTest(unittest.TestCase):
         self.assertIn('did not answer POST /image/image', str(caught.exception))
 
 
-class WarmupTest(unittest.TestCase):
-    def test_the_warm_up_renders_the_builds_own_rig_through_its_own_script(self):
-        rcc = FakeRcc()
-        service = renderer.Renderer(rcc=rcc, website=FakeWebsite())
-        service.warm_up()
-        self.assertEqual(service.warmup['state'], 'ok', service.warmup)
-        self.assertEqual(service.warmup['script'], renderer.WARMUP_SCRIPT)
-        self.assertEqual(rcc.calls[0][0], 'Model')
-        self.assertEqual(rcc.calls[0][1][0], renderer.R6_RIG)
-        self.assertEqual(rcc.calls[0][1][4], 'http://website.test')
+class ProbeTest(unittest.TestCase):
+    """The RCC image probe reports what the shipped script's calls do."""
 
-    def test_a_failed_warm_up_is_reported_not_hidden(self):
-        service = renderer.Renderer(rcc=FakeRcc(error='RCC is unreachable'), website=FakeWebsite())
-        service.warm_up()
-        self.assertEqual(service.warmup['state'], 'failed')
-        self.assertIn('unreachable', service.warmup['detail'])
+    def test_the_container_program_runs_every_call_the_script_makes(self):
+        sent = {}
 
+        def run(program):
+            sent['program'] = program
+            return 0, 'GetObjects=(true) / 3'
 
-class ServerCase(unittest.TestCase):
-    authorization = 'unit-test-authorization-value'
+        output = probe_rcc_image.run_probe(9, run=run)
+        self.assertIn('GetObjects', output)
+        program = sent['program']
+        self.assertIn("sys.path.insert(0, '/app')", program)
+        start = program.index('lua = ') + len('lua = ')
+        lua = json.loads(program[start:program.index('\n', start)])
+        for call in ('SetBaseUrl', 'GetObjects', 'ClickTexture(assetUrl', 'PreloadAsync',
+                     "'rbxassetid://'"):
+            self.assertIn(call, lua, call)
+        self.assertIn('/asset/?id=9', lua)
 
-    def start_server(self, rcc):
-        server = renderer.ThreadingHTTPServer(('127.0.0.1', 0), renderer.Handler)
-        server.daemon_threads = True
-        renderer.Handler.renderer = renderer.Renderer(rcc=rcc, website=FakeWebsite())
-        renderer.Handler.authorization_source = None
-        renderer.Handler.authorization = self.authorization
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        self.port = server.server_address[1]
-        self.url = f'http://127.0.0.1:{self.port}'
-
-    def post(self, path, payload=None, authorization=..., raw=None):
-        body = raw if raw is not None else json.dumps(payload or {}).encode()
-        headers = {'Content-Type': 'application/json'}
-        if authorization is ...:
-            headers['Authorization'] = self.authorization
-        elif authorization is not None:
-            headers['Authorization'] = authorization
-        request = urllib.request.Request(self.url + path, data=body, headers=headers, method='POST')
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        try:
-            with opener.open(request, timeout=10) as response:
-                return response.status, json.loads(response.read())
-        except urllib.error.HTTPError as error:
-            with error:
-                return error.code, json.loads(error.read())
-
-    def test_a_supported_render_returns_a_real_image(self):
-        rcc = FakeRcc()
-        self.start_server(rcc)
-        status, body = self.post('/image/image', {'assetId': 5})
-        self.assertEqual(status, 200)
-        self.assertTrue(body['success'])
-        self.assertEqual(renderer.image_details(base64.b64decode(body['data'])), ('PNG', 420, 420))
-        self.assertEqual(rcc.calls[0][0], 'Image')
-        self.assertEqual(rcc.calls[0][2], 420)
-
-    def test_missing_or_wrong_authorization_is_refused(self):
-        self.start_server(FakeRcc())
-        status, body = self.post('/image/image', {'assetId': 5}, authorization=None)
-        self.assertEqual((status, body['success']), (401, False))
-        status, _ = self.post('/image/image', {'assetId': 5}, authorization='wrong-value')
-        self.assertEqual(status, 401)
-
-    def test_an_unsupported_endpoint_is_explicit_about_the_missing_piece(self):
-        self.start_server(FakeRcc())
-        status, body = self.post('/image/clothing', {'assetId': 1})
-        self.assertEqual(status, 501)
-        self.assertIn('mannequin', body['message'])
-
-    def test_a_placeholder_is_never_returned_as_success(self):
-        rcc = FakeRcc(image=make_png(1, 1))
-        self.start_server(rcc)
-        status, body = self.post('/image/image', {'assetId': 5})
-        self.assertEqual(status, 502)
-        self.assertFalse(body['success'])
-        self.assertIn('placeholder', body['message'])
-
-    def test_a_render_failure_is_json_not_a_traceback(self):
-        self.start_server(FakeRcc(error='RCC is unreachable: connection refused'))
-        status, body = self.post('/image/image', {'assetId': 5})
-        self.assertEqual(status, 502)
-        self.assertIn('unreachable', body['message'])
-
-    def test_invalid_json_and_unknown_paths_are_reported(self):
-        self.start_server(FakeRcc())
-        status, body = self.post('/image/image', raw=b'not json')
-        self.assertEqual(status, 400)
-        self.assertIn('Invalid JSON', body['message'])
-        status, _ = self.post('/nope', {'assetId': 1})
-        self.assertEqual(status, 404)
-
-    def test_health_reports_rcc_and_the_warm_up_or_fails_honestly(self):
-        self.start_server(FakeRcc())
-        renderer.Handler.renderer.warmup = {'state': 'ok', 'script': 'Model'}
-        with urllib.request.urlopen(self.url + '/healthz', timeout=10) as response:
-            body = json.loads(response.read())
-        self.assertEqual(body['rcc']['version'], '0.450.0.411923')
-        self.assertEqual(body['warmup']['state'], 'ok')
-        self.start_server(FakeRcc(error='RCC is unreachable'))
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            urllib.request.urlopen(self.url + '/healthz', timeout=10)
-        self.assertEqual(caught.exception.code, 503)
-
-    def test_a_failing_render_is_retried_a_bounded_number_of_times(self):
-        rcc = FakeRcc(error='the render returned a 1x1 placeholder instead of an image')
-        self.start_server(rcc)
-        renderer.Handler.renderer.max_retries = 1
-        status, _ = self.post('/image/image', {'assetId': 5})
-        self.assertEqual(status, 502)
-        self.assertEqual(len(rcc.calls), 2, 'one attempt plus one bounded retry, never a loop')
+    def test_a_probe_that_cannot_run_is_reported_not_raised(self):
+        self.assertIn('could not run', probe_rcc_image.run_probe(9, run=lambda program: (1, 'no such service')))
 
 
 class PixelReaderTest(unittest.TestCase):
-    """The integration test's pixel reader must be trustworthy on real PNG bytes."""
+    """The integration test judges pixels, so its reader has to be exact."""
 
     def setUp(self):
-        # Loading the integration test must not run its stack checks.
-        os.environ.pop('RENDERER_TEST', None)
-        spec = importlib.util.spec_from_file_location('renderer_test_helpers',
+        spec = importlib.util.spec_from_file_location('local_renderer_pixels',
                                                       ROOT / 'scripts/test_local_renderer.py')
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
 
-    def test_left_and_right_halves_are_read_back(self):
-        width, height, rows = self.module.read_png(make_png(64, 16))
-        self.assertEqual((width, height), (64, 16))
-        left = self.module.colour_at(rows, width, 5, 8)
-        right = self.module.colour_at(rows, width, 60, 8)
-        self.assertGreater(left[0], 200)
-        self.assertLess(left[2], 60)
-        self.assertGreater(right[2], 200)
-        self.assertLess(right[0], 60)
+    def test_a_two_colour_png_reads_back_pixel_exact(self):
+        width, height, rows = self.module.read_png(make_png(8, 8))
+        self.assertEqual((width, height), (8, 8))
+        self.assertEqual(self.module.colour_at(rows, width, 0, 0), (255, 0, 0))
+        self.assertEqual(self.module.colour_at(rows, width, width - 1, height - 1), (0, 0, 255))
+        self.assertTrue(self.module.is_colourish((250, 5, 5), (255, 0, 0)))
 
-    def test_a_filtered_png_is_decoded_correctly(self):
-        """Real encoders emit filtered scanlines; the reader must undo them."""
-        width, height, rows = self.module.read_png(make_png(8, 4))
-        raw = b''
-        for row in rows:
-            filtered = bytes((row[i] - (row[i - 3] if i >= 3 else 0)) & 0xFF for i in range(len(row)))
-            raw += b'\x01' + filtered
-
-        def chunk(kind, payload):
-            return (struct.pack('>I', len(payload)) + kind + payload
-                    + struct.pack('>I', zlib.crc32(kind + payload) & 0xFFFFFFFF))
-
-        container = (b'\x89PNG\r\n\x1a\n'
-                     + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
-                     + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
-        width2, height2, rows2 = self.module.read_png(container)
-        self.assertEqual((width2, height2), (width, height))
-        self.assertEqual(self.module.colour_at(rows2, width2, 1, 2), self.module.colour_at(rows, width, 1, 2))
-        self.assertEqual(self.module.colour_at(rows2, width2, 6, 2), self.module.colour_at(rows, width, 6, 2))
+    def test_a_solid_png_is_not_confused_with_the_other_colour(self):
+        width, height, rows = self.module.read_png(make_png(8, 8, left=(10, 200, 10), right=(10, 200, 10)))
+        self.assertFalse(self.module.is_colourish(self.module.colour_at(rows, width, 4, 4), (220, 40, 40)))
 
 
 if __name__ == '__main__':

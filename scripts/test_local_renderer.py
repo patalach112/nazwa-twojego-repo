@@ -46,6 +46,7 @@ from test_asset_import import (  # noqa: E402
     run_stack, trace, wait_ready, write_config, write_config_bytes,
 )
 import configure_local_docker  # noqa: E402
+from probe_rcc_image import run_probe as rcc_image_probe  # noqa: E402
 
 DIRECTORY = ROOT / "docker/local"
 DATA_PREFIX = "/data/"
@@ -187,6 +188,19 @@ def renderer_probe(asset_id, authorization):
     return f"the renderer answered HTTP {status}: {body.get('message')}"
 
 
+def rcc_image_report(asset_id):
+    """RCC's own answers for the calls the image script makes, for failure messages.
+
+    A blank or placeholder thumbnail does not say why RCC could not load the asset, and
+    the shipped script swallows the reason. This asks RCC directly; it renders nothing
+    into the website and is only used when an assertion already failed.
+    """
+    try:
+        return rcc_image_probe(asset_id)
+    except Exception as error:  # noqa: BLE001 - a diagnostic must never hide the failure
+        return f"the RCC image probe could not run: {type(error).__name__}: {error}"
+
+
 def wait_for_thumbnail(client, backend, database, asset_id, what, authorization=None,
                        timeout=RENDER_TIMEOUT):
     """Waits for the render to reach the database, then for the website to serve it.
@@ -207,7 +221,8 @@ def wait_for_thumbnail(client, backend, database, asset_id, what, authorization=
     if not rows:
         fail(f"{what} never got a thumbnail row within {timeout}s: "
              f"{renderer_probe(asset_id, authorization)}; the website answered "
-             f"{thumbnail_state(client, backend, asset_id)}")
+             f"{thumbnail_state(client, backend, asset_id)}; RCC said: "
+             f"{rcc_image_report(asset_id)}")
     if len(rows) != 1:
         fail(f"{what} must have exactly one thumbnail row, the database has {rows}")
     moderation, key = rows[0].split("|")
@@ -494,7 +509,8 @@ def main():
             matching = sum(1 for pixel in samples if is_colourish(pixel, colour))
             if matching < len(samples) // 2:
                 fail(f"the {label.lower()} render does not show the uploaded colour "
-                     f"({matching}/{len(samples)}): {samples}")
+                     f"({matching}/{len(samples)}): {samples}; RCC said: "
+                     f"{rcc_image_report(asset_id)}")
             rendered[label] = (path.read_bytes(), entry["imageUrl"], samples[0])
             notice(f"{label.lower()} texture {asset_id} rendered as {key}.png, served at {served_url}, "
                    f"showing {samples[0]}")

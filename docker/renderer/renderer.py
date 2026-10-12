@@ -22,6 +22,8 @@ import binascii
 import hmac
 import json
 import os
+from pathlib import Path
+import re
 import signal
 import struct
 import threading
@@ -43,6 +45,10 @@ DEFAULT_WEBSITE_URL = 'http://website:5000'
 R6_RIG = 'rbxasset://avatar/character.rbxm'
 R15_RIG = 'rbxasset://avatar/characterR15.rbxm'
 PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+JPEG_MAGIC = b'\xff\xd8\xff'
+# Where the build's own thumbnail scripts live; they carry their fallback images as
+# base64 literals, and returning one of those as a render would fake a picture.
+SCRIPTS_DIRECTORY = '/opt/rcc/internalscripts/thumbnails'
 # The website's own render client allows ten seconds per request, so Wine's and
 # RCC's first-render cost is paid at startup by rendering the build's own avatar rig
 # through RCC's shipped Model script. Nothing is downloaded for it.
@@ -75,11 +81,44 @@ def image_details(data):
     return None
 
 
-def decode_render_output(text, expected_edge):
+PLACEHOLDER_LITERAL = re.compile(r'"([A-Za-z0-9+/]{400,}={0,2})"')
+
+
+def load_placeholders(directory=None, limit=1024 * 1024):
+    """The thumbnail scripts' own built-in fallback images, by payload.
+
+    The shipped scripts answer a render they could not do with an embedded image (a
+    transparent PNG for ``Image.lua``, an hourglass JPEG for ``Decal.lua``). Sizes are
+    not enough to spot them - the transparent PNG is 512x512 and passes any size check -
+    so the payloads are extracted from the scripts this build ships and refused by exact
+    bytes. The mapping names the script, which is what a failure message should say.
+    """
+    directory = Path(directory or os.environ.get('RCC_SCRIPTS_DIRECTORY', SCRIPTS_DIRECTORY))
+    if not directory.is_dir():
+        log('placeholder_directory_missing', path=str(directory))
+        return {}
+    placeholders = {}
+    for script in sorted(directory.glob('*.lua')):
+        try:
+            text = script.read_text(errors='replace')
+        except OSError:
+            continue
+        for literal in PLACEHOLDER_LITERAL.findall(text):
+            try:
+                data = base64.b64decode(literal, validate=True)
+            except (binascii.Error, ValueError):
+                continue
+            if len(data) <= limit and (data.startswith(PNG_MAGIC) or data.startswith(JPEG_MAGIC)):
+                placeholders[data] = script.stem
+    return placeholders
+
+
+def decode_render_output(text, expected_edge, placeholders=None):
     """Decodes one base64 image from RCC and refuses placeholders.
 
-    RCC happily returns a 1x1 hourglass or a truncated payload; treating either as
-    a finished thumbnail would put a fake picture into the catalog.
+    RCC happily returns a 1x1 hourglass, the script's own fallback image or a truncated
+    payload; treating any of them as a finished thumbnail would put a fake picture into
+    the catalog.
     """
     if not text:
         raise RenderError('the render returned no image data')
@@ -93,6 +132,12 @@ def decode_render_output(text, expected_edge):
     _, width, height = details
     if width < expected_edge or height < expected_edge:
         raise RenderError(f'the render returned a {width}x{height} placeholder instead of an image')
+    if placeholders:
+        source = placeholders.get(data)
+        if source is not None:
+            raise RenderError(
+                f'RCC answered with the built-in fallback image of the {source} thumbnail script, '
+                f'so the asset it was asked to load did not render')
     return data
 
 
@@ -171,7 +216,7 @@ class RccClient:
         self.version_at = time.monotonic()
         return self.version
 
-    def render(self, script_type, arguments, expected_edge):
+    def render(self, script_type, arguments, expected_edge, placeholders=None):
         """Runs one Thumbnail job and returns the decoded image bytes."""
         job_id = str(uuid.uuid4())
         job = ET.Element('job')
@@ -209,7 +254,7 @@ class RccClient:
         failure = None
         for candidate in candidates:
             try:
-                return decode_render_output(candidate, expected_edge)
+                return decode_render_output(candidate, expected_edge, placeholders)
             except RenderError as error:
                 failure = error
         raise RenderError(f'RCC did not return a usable image ({failure}); '
@@ -237,13 +282,22 @@ class WebsiteClient:
 class Renderer:
     """Maps the website's renderer endpoints onto RCC thumbnail scripts."""
 
-    def __init__(self, rcc=None, website=None):
+    def __init__(self, rcc=None, website=None, placeholders=None):
         self.rcc = rcc or RccClient()
         self.website = website or WebsiteClient()
         self.base_url = self.website.base_url
         self.lock = threading.Lock()
         self.max_retries = max(0, int(os.environ.get('RENDERER_MAX_RETRIES', '1')))
         self.warmup = {'state': 'pending', 'steps': {}}
+        self._placeholders = placeholders
+
+    @property
+    def placeholders(self):
+        """The build's own fallback images, read once from the mounted RCC build."""
+        if self._placeholders is None:
+            self._placeholders = load_placeholders()
+            log('placeholders_loaded', scripts=sorted(set(self._placeholders.values())))
+        return self._placeholders
 
     # -- argument builders ----------------------------------------------------
     # Every order and value below follows a script RCC ships in
@@ -387,7 +441,7 @@ class Renderer:
             started = time.monotonic()
             with self.lock:
                 try:
-                    image = self.rcc.render(script_type, arguments, expected_edge)
+                    image = self.rcc.render(script_type, arguments, expected_edge, self.placeholders)
                     log('rendered', path=path, script=script_type, bytes=len(image),
                         seconds=round(time.monotonic() - started, 2), attempt=attempt)
                     return image

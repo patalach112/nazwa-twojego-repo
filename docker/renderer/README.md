@@ -118,6 +118,17 @@ pending instead of being faked:
   runs in a `finally` block, so a stuck render is reported and cleaned up instead of
   hammering RCC.
 * Retries are bounded by `RENDERER_MAX_RETRIES` and stop on the first success.
+* A render is refused, not stored, when it is one of the fallback images the shipped
+  scripts carry. `Image.lua` answers a render it cannot do with an embedded 512x512
+  transparent PNG - larger than the 420 pixels a render must be, so a size check passes it
+  and the website then resizes it into a blank thumbnail that looks finished. The renderer
+  extracts those literals from the build's own scripts (`RCC_SCRIPTS_DIRECTORY`) and
+  answers 502 naming the script, so the thumbnail stays pending instead of white.
+* `scripts/probe_rcc_image.py` asks RCC itself what the shipped script's calls do
+  (`GetObjects`, `ClickTexture` on the asset URL, the same after `PreloadAsync`, and
+  `ClickTexture` on `rbxassetid://`). It renders nothing and writes nothing; the
+  integration test calls it when a texture assertion fails, so the reason comes from RCC
+  rather than from a guess.
 * The response is checked before it is returned: it must be decodable base64, a PNG,
   and at least as large as the requested edge. This rejects RCC's own 1x1 hourglass
   placeholder, so a placeholder can never be stored as a finished thumbnail.
