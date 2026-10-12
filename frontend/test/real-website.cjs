@@ -161,7 +161,10 @@ async function main() {
     passed.push('Account and login cookie survive frontend/backend restart without key rotation');
     await context.close();
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({scope:'Real local Docker website, PostgreSQL and Redis; no game join', passed}, null, 2));
-    for (const result of passed) console.log('Real website: ' + result);
+    for (const result of passed) {
+      console.log('Real website: ' + result);
+      if (process.env.GITHUB_ACTIONS === 'true') console.log('::notice title=Real website account check::' + result);
+    }
     console.log('Real frontend/backend account integration passed; RCC games and rendering remain separate tests.');
   } catch (error) {
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({passed, error:error.message, errors, serverFailures, externalRequests:[...externalRequests]}, null, 2));

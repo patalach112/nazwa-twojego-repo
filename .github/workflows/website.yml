@@ -23,7 +23,7 @@ jobs:
       - name: Generate disposable real database configs
         run: python3 scripts/configure_local_docker.py --database-name marine_website_tests --project-name marine-website-tests --test
       - name: Build and start the actual website, frontend, migrations, Postgres and Redis
-        run: ./scripts/local-stack.sh up --build -d
+        run: ./scripts/local-stack.sh up --build -d > "$RUNNER_TEMP/local-build.log" 2>&1
       - name: Install browser test dependencies
         working-directory: frontend
         run: npm install --ignore-scripts --no-audit --no-fund
@@ -41,16 +41,20 @@ jobs:
           ./scripts/local-stack.sh logs --no-color --tail 100 website frontend migrations > "$RUNNER_TEMP/local-website.log"
           python3 - <<'PY'
           import json, os, pathlib
-          text = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'local-website.log').read_text()
+          temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          build_log = temporary / 'local-build.log'
+          text = (build_log.read_text() if build_log.exists() else '') + '\n' + (temporary / 'local-website.log').read_text()
           config = json.loads(pathlib.Path('docker/local/website.json').read_text())
           def redact(value):
               global text
               if isinstance(value, dict):
                   for key, child in value.items():
-                      if isinstance(child, str) and any(word in key.lower() for word in ('secret','authorization','sessions','games','postgres')):
+                      if isinstance(child, str) and child and any(word in key.lower() for word in ('secret','authorization','sessions','games','postgres')):
                           text = text.replace(child, '[redacted]')
                       elif isinstance(child, dict): redact(child)
           redact(config)
+          migrations = json.loads(pathlib.Path('docker/local/migrations.json').read_text())
+          text = text.replace(migrations['knex']['connection']['password'], '[redacted]')
           diagnostics = '\n'.join(text.splitlines()[-120:])
           print(diagnostics)
           print('::error title=Local website diagnostics::' + diagnostics.replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
