@@ -67,8 +67,9 @@ RENDERER_ASSET_BASE = "https://www.silrev.biz:5000"
 THUMBNAIL_EDGE = 420
 RENDER_TIMEOUT = int(os.environ.get("RENDERER_TEST_TIMEOUT", "240"))
 # The website's own avatar flow renders a headshot and an avatar and then writes both
-# files, so it needs longer than one render.
-AVATAR_TIMEOUT = int(os.environ.get("RENDERER_AVATAR_TIMEOUT", "300"))
+# files, so it needs longer than one render. RedrawAvatar carries a two-minute
+# cancellation of its own, so waiting past that only asks the same question again.
+AVATAR_TIMEOUT = int(os.environ.get("RENDERER_AVATAR_TIMEOUT", "180"))
 # An avatar render is 420x420 and the website resizes the stored images: 352x352 for the
 # avatar and 150x150 for the headshot (Roblox.Services/Users/Avatar.cs).
 AVATAR_EDGE = 352
@@ -237,6 +238,37 @@ def thumbnail_rows(database, asset_id):
     return [line.strip() for line in output.splitlines() if line.strip()]
 
 
+def avatar_summary(database, user_id):
+    """The account's avatar row as one line, including the fact that there is none.
+
+    A redraw that never reaches the renderer is usually a row that was never written:
+    the signup path only creates it when a renderer is configured, and the render call
+    itself needs the colours and scales it reads from that row. This says which of the
+    two happened without treating "no row" as an error of its own.
+    """
+    query = (
+        "SELECT format('avatar row: type=%s scales=%s/%s/%s/%s/%s/%s colors=%s,%s,%s worn=%s',"
+        " coalesce((SELECT avatar_type::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT scale_height::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT scale_width::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT scale_depth::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT scale_proportion::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT scale_head::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT scale_body_type::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT head_color_id::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT torso_color_id::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT left_leg_color_id::text FROM user_avatar WHERE user_id = {0}), '<none>'),"
+        " coalesce((SELECT count(*)::text FROM user_avatar_asset WHERE user_id = {0}), '0'));"
+    ).format(int(user_id))
+    try:
+        output = run_stack("exec", "-T", "postgres", "psql", "--username", "postgres",
+                           "--dbname", database, "--tuples-only", "--no-align", "--command", query)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"the avatar row could not be read: {type(error).__name__}: {error}"
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[0] if lines else "the avatar row query returned nothing"
+
+
 def renderer_probe(asset_id, authorization):
     """The renderer's own answer for one asset, used as a failure message.
 
@@ -290,13 +322,16 @@ def renderer_log_lines(pattern, tail=800, keep=40, cap=3500):
     return scrub(" | ".join(kept[-keep:])[-cap:])
 
 
-def website_log_lines(pattern, tail=800, keep=40, cap=3500):
+def website_log_lines(pattern, tail=800, keep=40, cap=3500, exclude=None):
     """The website container's own log lines matching ``pattern``.
 
     The website is the half of the avatar flow that owns the ten-second render client,
-    the database writes and the files, so the reason a redraw stayed pending is usually
-    written there rather than in the renderer. Same rules as the renderer log: a
-    diagnostic that reports its own failure and never prints a secret.
+    the database writes and the files, so the reason a redraw stayed pending is written
+    there rather than in the renderer. ``exclude`` drops the framework's per-request
+    noise (and the compose health check, which provokes a handled 401 every few
+    seconds), because that noise is newest and would crowd the answer out of the last
+    ``keep`` lines. Same rules as the renderer log: a diagnostic that reports its own
+    failure and never prints a secret.
     """
     try:
         result = subprocess.run(["bash", "scripts/local-stack.sh", "logs", "--no-color",
@@ -305,10 +340,23 @@ def website_log_lines(pattern, tail=800, keep=40, cap=3500):
     except (OSError, subprocess.SubprocessError) as error:
         return f"the website log could not be read: {type(error).__name__}: {error}"
     matcher = re.compile(pattern)
-    kept = [line.strip() for line in (result.stdout + result.stderr).splitlines() if matcher.search(line)]
+    noise = re.compile(exclude) if exclude else None
+    kept = [line.strip() for line in (result.stdout + result.stderr).splitlines()
+            if matcher.search(line) and not (noise and noise.search(line))]
     if not kept:
         return f"no line of the website log matched {pattern} in its last {tail} lines"
     return scrub(" | ".join(kept[-keep:])[-cap:])
+
+
+# Everything the website logs per request, plus the health check's expected 401. The
+# app's own messages - a background render that failed, the render client's timing, the
+# avatar service - are what is left.
+WEBSITE_REQUEST_NOISE = (r"(?i)request starting|request finished|executing endpoint|"
+                         r"executed endpoint|executed action|route matched|writing value|"
+                         r"users/authenticated")
+WEBSITE_REDRAW_LINES = (r"(?i)background render|renderinghandler|redrawavatar|"
+                        r"redraw-thumbnail|locknotacquired|rendering is disabled|"
+                        r"unauthorized|unhandled")
 
 
 def job_summary(markdown):
@@ -741,16 +789,23 @@ def main():
         if status not in (200, 204):
             fail(f"the website's avatar redraw endpoint answered HTTP {status}: "
                  f"{body.decode('utf-8', 'replace')[:200]}")
+        # The redraw answers before it renders, and a background failure is printed
+        # within seconds; take the website's own lines now, while they are still close
+        # to the request, instead of after the polling below has buried them in the
+        # framework's per-request logging.
+        time.sleep(15)
+        early_log = website_log_lines(WEBSITE_REDRAW_LINES, tail=2000, keep=25, cap=3000,
+                                      exclude=WEBSITE_REQUEST_NOISE)
         entry = wait_for_user_avatar(owner, backend, owner_id, AVATAR_TIMEOUT)
         if entry.get("state") != "Completed" or not entry.get("imageUrl"):
             fail(f"the website did not report the owner's avatar as rendered within "
-                 f"{AVATAR_TIMEOUT}s (the API says {entry}); the database says "
-                 + " ".join(psql(database, "SELECT coalesce(thumbnail_url, '<null>'), "
-                                           "coalesce(headshot_thumbnail_url, '<null>') "
-                                           f"FROM user_avatar WHERE user_id = {owner_id};"))
-                 + "; the website said: "
-                 + website_log_lines(r"RenderingHandler|RedrawAvatar|avatar|thumbnail|"
-                                     r"Exception|Failed to save", tail=2000)
+                 f"{AVATAR_TIMEOUT}s after the redraw answered HTTP {status} "
+                 f"(the API says {entry}); the database says "
+                 + avatar_summary(database, owner_id)
+                 + "; the website said, just after the request: " + early_log
+                 + "; and later: "
+                 + website_log_lines(WEBSITE_REDRAW_LINES, tail=2000, keep=25, cap=2000,
+                                     exclude=WEBSITE_REQUEST_NOISE)
                  + "; the renderer said: "
                  + renderer_log_lines(r"/player/(thumbnail|headshot)|render_|Timeout|"
                                       r"Traceback|Error", tail=2000))
