@@ -102,8 +102,9 @@ not point it at personal or shared production data.
 ## Still outside this stack
 
 There is no operational RCC launcher/proxy or verified real game join. The
-experimental RCC Wine compose file is separate; 2020 JSON execution still needs
-testing. Disabled rendering produces pending thumbnails, not rendered avatars.
+experimental RCC Wine compose file is separate. A controlled 2020 JSON
+`ExecuteScript` job passed under Wine; `GameServer` mode and client joins remain
+untested. Disabled rendering produces pending thumbnails, not rendered avatars.
 Chat, trade/economy workflows, uploads/Go validation, account recovery and 2FA
 end-to-end behavior are not established by the basic account test.
 

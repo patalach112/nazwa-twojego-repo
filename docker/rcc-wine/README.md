@@ -20,6 +20,8 @@ docker compose -f docker-compose.rcc-wine.yml ps
 docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/healthcheck.py
 # A separate Lua smoke job for 2016/2017 only, without loading a place:
 docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/lua_probe.py
+# For the selected 2020 container only: one controlled JSON ExecuteScript job.
+docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/json_probe.py
 # Stop RCC, Wine and Xvfb together:
 docker compose -f docker-compose.rcc-wine.yml down
 ```
@@ -57,24 +59,31 @@ published on host loopback only and must not be exposed to the internet.
 `--network none`. Every build must return a nonempty SOAP `GetVersionResult`
 and stop on a shutdown signal. The 2016 and 2017 builds must also execute a tiny
 Lua job returning a known string and close that job. Startup is bounded and
-logs are retained on failure. The workflow fails when those checks fail; its
-per-build report still distinguishes the untested modern JSON job contract
-from the legacy Lua checks.
+logs are retained on failure. The 2020 build must execute a JSON `ExecuteScript`
+job with typed arguments, a temporary local Lua script and a unique return
+value. That script creates and destroys a Part in its DataModel; the probe then
+closes its job and removes the temporary script from the writable runtime.
+The mounted original binaries and internal scripts remain unchanged. The
+workflow fails when required checks fail; 2018 JSON dispatch remains untested.
 
 The actual container experiment on 2026-10-12 established:
 
-| Bundled build | SOAP response | Raw Lua OpenJobEx / CloseJob | Game join |
+| Bundled build | SOAP response | Execution job / CloseJob | Game join |
 | --- | --- | --- | --- |
 | 2016 | passed (`GetVersion` returns `?` in this modified binary) | passed | not tested |
 | 2017 | passed (`0.314.0.159344`) | passed | not tested |
 | 2018 | passed | not applicable: requires JSON dispatch | not tested |
-| 2020 | passed with `Settings.json` | not applicable: requires JSON dispatch | not tested |
+| 2020 | passed (`0.450.0.411923`) with `Settings.json` | JSON ExecuteScript passed | not tested |
 
 The 2018 and 2020 servers explicitly rejected raw Lua as invalid JSON. This is
 a different job contract, not evidence that Wine failed to load the executable.
-Their JSON job execution/rendering remains unverified. The corresponding
-scripts in `game-renderer/` show the legacy JSON request shapes but do not turn
-this smoke test into a complete launcher.
+The 2020 controlled JSON execution was verified in the real Wine workflow:
+https://github.com/patalach112/nazwa-twojego-repo/actions/runs/38232114384
+This proves JSON dispatch into Lua, not `GameServer` mode or thumbnail rendering.
+2018 JSON execution remains unverified. The corresponding scripts in
+`game-renderer/` show other request shapes but do not turn this smoke test into
+a complete launcher. `scripts/test_rcc_json_probe.py` checks probe contract and
+cleanup with a substitute RPC only; it is not the actual Wine execution proof.
 
 These checks do **not** load a real place, render an avatar, create the game UDP
 listener, start the client proxy, send `/gs/*` callbacks or join from a client.
