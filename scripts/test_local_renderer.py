@@ -13,13 +13,16 @@ profile:
 1. the renderer reaches RCC and reports its real version,
 2. an uploaded image asset gets a 420x420 thumbnail whose pixels are the uploaded
    texture, stored in the configured thumbnail directory and served from its URL,
-3. an uploaded model asset gets its own, different 3D render, stored as a separate file
-   and recorded as awaiting staff approval in the database (asserted, not hidden),
+3. an uploaded model asset gets its own, different 3D render, stored as a separate file,
+   recorded as awaiting staff approval in the database (asserted, not hidden) and reached
+   through the site's own image handler (/thumbs/asset.ashx) from the origin a page is
+   loaded from, redirect chain and bytes included,
 4. an account's own avatar is rendered through the website itself: posting to the
    website's redraw endpoint makes it store an avatar thumbnail and a headshot under the
    configured thumbnail directory, report them through the same thumbnail API the
-   frontend calls, and serve the pixels behind the browser URL it gives out - and the
-   stored image has to look like a character, not a background,
+   frontend calls, and serve the pixels behind the browser URL it gives out - including
+   the /thumbs/avatar.ashx and /thumbs/avatar-headshot.ashx handlers a page's own <img>
+   uses - and the stored image has to look like a character, not a background,
 5. RCC renders that account's avatar directly too, through its shipped
    Avatar_R15_Action.lua, so the renderer can be told apart from the website around it,
 6. with the renderer stopped the upload and delivery still work and nothing claims a
@@ -476,6 +479,30 @@ def fetch_thumbnail(image_url, backend):
     return url, body
 
 
+def browser_image(client, base, path, what, limit=5):
+    """Follows the site's own image handler to the bytes, the way a browser does.
+
+    Pages still point their images at handlers like ``/thumbs/asset.ashx``, which answer
+    with a redirect to the stored file (or to a placeholder). The redirect chain is part
+    of the answer, and a placeholder is not a picture: the caller compares the bytes it
+    ends on with the file the website stored. ``base`` is the origin the page was loaded
+    from, so the relative redirect is resolved the way a browser resolves it.
+    """
+    url = base.rstrip("/") + path
+    for _ in range(limit):
+        status, headers, body = client.get(url)
+        location = headers.get("Location")
+        if status in (301, 302, 303, 307, 308) and location:
+            url = location if location.startswith("http") else base.rstrip("/") + location
+            continue
+        if status != 200:
+            fail(f"{what} ({path}) answered HTTP {status}: {body[:200]!r}")
+        if "placeholder" in url or "blocked" in url:
+            fail(f"{what} ({path}) ended at {url}, which is a placeholder, not a picture")
+        return url, body
+    fail(f"{what} ({path}) did not settle after {limit} redirects")
+
+
 def thumbnail_file(thumbnails_directory, image_url):  # noqa: D103
     """Maps a served thumbnail URL back to the file the website wrote."""
     name = urllib.parse.urlsplit(image_url).path.rsplit("/", 1)[-1]
@@ -775,8 +802,37 @@ def main():
             fail(f"the model thumbnail is {model_width}x{model_height}, not {THUMBNAIL_EDGE}x{THUMBNAIL_EDGE}")
         if model_path.read_bytes() == path.read_bytes():
             fail("the model thumbnail is the same file as the texture thumbnail")
+        # The item page asks for the item itself, not only for its picture: an item the
+        # catalogue details API does not describe is an item nobody can open. This is the
+        # request frontend/services/catalog.js getItemDetails makes.
+        status, _, details_body = owner.post_json(
+            f"{backend}/apisite/catalog/v1/catalog/items/details",
+            {"items": [{"itemType": "Asset", "id": model_id}]})
+        if status != 200:
+            fail(f"the catalogue details API answered HTTP {status} for asset {model_id}: "
+                 f"{details_body[:200]!r}")
+        described = json.loads(details_body).get("data") or []
+        if len(described) != 1 or described[0].get("id") != model_id:
+            fail(f"the catalogue details API does not describe asset {model_id}: {described}")
+        if described[0].get("name") != "RenderModel":
+            fail(f"the catalogue details API describes asset {model_id} as "
+                 f"{described[0].get('name')!r}, not the name it was uploaded with")
+
+        # The picture a page actually shows comes from the site's own image handler, so
+        # the redirect chain has to end on this file and not on /img/placeholder.png.
+        model_handler = browser_image(owner, frontend, f"/thumbs/asset.ashx?assetId={model_id}",
+                                      f"the asset image handler for asset {model_id}")
+        if urllib.parse.urlsplit(model_handler[0]).path != \
+                urllib.parse.urlsplit(model_entry["imageUrl"]).path:
+            fail(f"/thumbs/asset.ashx sent the browser to {model_handler[0]}, not the stored "
+                 f"{model_entry['imageUrl']}")
+        if model_handler[1] != model_path.read_bytes():
+            fail(f"/thumbs/asset.ashx ended on {len(model_handler[1])} bytes, not the stored "
+                 f"{len(model_path.read_bytes())} bytes of the model thumbnail")
         notice(f"model asset {model_id} rendered its own 3D thumbnail, stored as {key} "
-               f"(awaiting approval {moderation}) and served at {model_entry['imageUrl']}")
+               f"(awaiting approval {moderation}), served at {model_entry['imageUrl']}, "
+               f"described by the catalogue details API the item page calls and reachable "
+               f"through /thumbs/asset.ashx for a page's own <img>")
 
         # 3b. The account's own avatar, the way the browser gets it: the website's
         #     redraw endpoint renders a headshot and the avatar through RenderingHandler,
@@ -833,6 +889,13 @@ def main():
         if differing < len(shades) // 10:
             fail(f"the stored avatar thumbnail is a background: only {differing} of "
                  f"{len(shades)} sampled pixels differ from {dominant}")
+        # Same for the account: the pages ask /thumbs/avatar.ashx (and the headshot
+        # handler) instead of the API, and both have to end on the stored files.
+        avatar_handler = browser_image(owner, frontend, f"/thumbs/avatar.ashx?userId={owner_id}",
+                                       "the avatar image handler")
+        if avatar_handler[1] != stored.read_bytes():
+            fail(f"/thumbs/avatar.ashx ended on {len(avatar_handler[1])} bytes, not the "
+                 f"stored {len(stored.read_bytes())} bytes of the avatar thumbnail")
         headshot = wait_for_user_avatar(owner, backend, owner_id, 30, "avatar-headshot")
         if headshot.get("state") != "Completed" or not headshot.get("imageUrl"):
             fail(f"the website stored no headshot for the owner: {headshot}")
@@ -841,10 +904,17 @@ def main():
         if (headshot_width, headshot_height) != (HEADSHOT_EDGE, HEADSHOT_EDGE):
             fail(f"the stored headshot is {headshot_width}x{headshot_height}, not "
                  f"{HEADSHOT_EDGE}x{HEADSHOT_EDGE}")
+        headshot_handler = browser_image(
+            owner, frontend, f"/thumbs/avatar-headshot.ashx?userId={owner_id}",
+            "the headshot image handler")
+        if headshot_handler[1] != headshot_path.read_bytes():
+            fail(f"/thumbs/avatar-headshot.ashx ended on {len(headshot_handler[1])} bytes, "
+                 f"not the stored {len(headshot_path.read_bytes())} bytes of the headshot")
         notice(f"the owner's own avatar is rendered, stored and served the way the browser "
                f"asks for it: {served_path} ({width}x{height}, {differing}/{len(shades)} "
-               f"sampled pixels away from the background) and a "
-               f"{headshot_width}x{headshot_height} headshot")
+               f"sampled pixels away from the background), a "
+               f"{headshot_width}x{headshot_height} headshot, and both /thumbs/avatar.ashx "
+               f"and /thumbs/avatar-headshot.ashx end on those files")
 
         # 3c. The renderer on its own: RCC's own Avatar_R15_Action.lua loads the account's
         #     character inside RCC and clicks it. A 200 alone is not success, so the

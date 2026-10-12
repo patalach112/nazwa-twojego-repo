@@ -200,7 +200,13 @@ RCC --https--> www.silrev.biz:5000 (compose network alias, renderer container)
 different textures, checked pixel by pixel), model assets, and an account's own avatar -
 the last one end to end, from the website's redraw endpoint to the stored avatar
 thumbnail and headshot and the pixels behind the URL the thumbnail API hands the
-frontend, which is what the browser loads. The avatar image has to look like a character
+frontend, which is what the browser loads. It also asks for the pictures the way a page
+does: through the site's own image handlers (`/thumbs/asset.ashx`,
+`/thumbs/avatar.ashx`, `/thumbs/avatar-headshot.ashx`) on the origin the pages are served
+from, following the redirect to `/images/thumbnails/...` and comparing the bytes with the
+file the website stored, so a placeholder or a redirect to nowhere fails the check. The
+item the model render belongs to is asked for through the catalogue details API the item
+page calls, so an item whose page could not describe it fails too. The avatar image has to look like a character
 and not like a background, and the pixels are re-checked after the website's own resize.
 The headshot route is covered through the avatar step, which asserts the stored
 150x150 file. The hat and mesh routes are implemented and clothing is refused with a
