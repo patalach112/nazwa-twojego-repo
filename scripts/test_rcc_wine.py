@@ -27,7 +27,7 @@ def annotation(level, title, message):
 def run_build(year, folder, image):
     name = 'rcc-wine-test-' + uuid.uuid4().hex[:12]
     namespace = 'http://silrev.biz/' if year == '2020' else 'http://projex.zip/'
-    result = {'year': year, 'namespace': namespace, 'soap': False, 'lua': None if year in ('2018', '2020') else False, 'stopped': False}
+    result = {'year': year, 'namespace': namespace, 'soap': False, 'lua': None if year in ('2018', '2020') else False, 'jsonJob': False if year == '2020' else None, 'stopped': False}
     try:
         launched = command(
             'docker', 'run', '--detach', '--name', name, '--network', 'none',
@@ -61,9 +61,13 @@ def run_build(year, folder, image):
             if lua.returncode:
                 raise RuntimeError('SOAP works, but Lua did not: ' + lua.stderr.strip())
             result['lua'] = True
+        elif year == '2020':
+            execution = command('docker', 'exec', name, 'python3', '/usr/local/bin/json_probe.py', timeout=70)
+            if execution.returncode:
+                raise RuntimeError('SOAP works, but the JSON job did not: ' + execution.stderr.strip())
+            result['jsonJob'] = True
+            result['jobContract'] = 'JSON ExecuteScript with a controlled local Lua script'
         else:
-            # These real RCC builds rejected raw Lua as invalid JSON. Do not
-            # mistake a wrong job contract for a Wine failure or fake a Lua pass.
             result['jobContract'] = 'JSON dispatch; execution not tested'
         before = time.monotonic()
         stopped = command('docker', 'stop', '--time', '15', name, timeout=25)
@@ -72,7 +76,8 @@ def run_build(year, folder, image):
         result['stopped'] = stopped.returncode == 0 and state.stdout.startswith('false ') and not state.stdout.strip().endswith(' 137')
         if not result['stopped']:
             raise RuntimeError('The container needed a forceful kill or did not stop: ' + state.stdout.strip())
-        scope = 'Lua OpenJobEx/CloseJob passed' if result['lua'] else 'JSON job execution NOT tested'
+        scope = ('Lua OpenJobEx/CloseJob passed' if result['lua'] else
+                 'JSON ExecuteScript/CloseJob passed' if result['jsonJob'] else 'JSON job execution NOT tested')
         annotation('notice', f'RCC Wine {year}', f"SOAP {result['version']}, {scope}, signal shutdown passed. No place or client join was tested.")
     except Exception as error:
         result['error'] = str(error)
@@ -96,11 +101,11 @@ def main():
     print(json.dumps(results, indent=2))
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-            summary.write('## Actual Windows RCC under Wine\n\n| Build | SOAP | Lua job | Shutdown |\n| --- | --- | --- | --- |\n')
+            summary.write('## Actual Windows RCC under Wine\n\n| Build | SOAP | Execution job | Shutdown |\n| --- | --- | --- | --- |\n')
             for result in results:
-                summary.write('| ' + result['year'] + ' | ' + ' | '.join('not tested (JSON jobs)' if result[key] is None else 'passed' if result[key] else 'not verified' for key in ('soap', 'lua', 'stopped')) + ' |\n')
+                summary.write('| ' + result['year'] + ' | ' + ' | '.join('not tested (JSON jobs)' if value is None else 'passed' if value else 'not verified' for value in (result['soap'], result['jsonJob'] if result['year'] == '2020' else result['lua'], result['stopped'])) + ' |\n')
             summary.write('\nThese scoped smoke checks are not a real place launch or a client join. Failed builds remain unsupported.\n')
-    return 0 if all(r['soap'] and r['lua'] is not False and r['stopped'] for r in results) else 1
+    return 0 if all(r['soap'] and r['lua'] is not False and r['jsonJob'] is not False and r['stopped'] for r in results) else 1
 
 
 if __name__ == '__main__':
