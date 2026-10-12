@@ -26,17 +26,25 @@ const errors = [];
 const serverFailures = [];
 const externalRequests = new Set();
 const passed = [];
+const networkFailures = [];
+let phase = 'waiting for services';
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 function observe(page) {
   page.on('pageerror', error => errors.push({name: error.name, message: error.message, stack: (error.stack || '').slice(0, 800)}));
   page.on('response', response => {
-    if (response.status() >= 500 || response.status() === 404) {
+    if (response.status() >= 400) {
       const url = new URL(response.url());
       const proxied = url.searchParams.get('url');
       const targetPath = proxied ? new URL(proxied).pathname : url.pathname;
-      serverFailures.push(response.status() + ' ' + targetPath);
+      if (!(response.status() === 401 && targetPath === accountPath))
+        serverFailures.push(response.status() + ' ' + targetPath);
     }
+  });
+  page.on('requestfailed', req => {
+    const url = new URL(req.url());
+    const target = url.searchParams.get('url');
+    networkFailures.push({path: target ? new URL(target).pathname : url.pathname, reason: req.failure()?.errorText});
   });
   page.on('request', req => {
     const url = new URL(req.url());
@@ -85,6 +93,7 @@ async function main() {
     const page = await context.newPage();
     observe(page);
     for (const [label, origin] of [['frontend', frontend], ['backend', backend]]) {
+      phase = label + ' anonymous root';
       const response = await page.goto(origin + '/', {waitUntil: 'domcontentloaded'});
       assert.equal(response.status(), 200, label + ' root is not reachable');
       await page.getByRole('heading', {name: 'Welcome to Marine', exact: true}).waitFor();
@@ -92,6 +101,7 @@ async function main() {
       await snapshot(page, label + '-anonymous');
     }
     passed.push('Anonymous real frontend and backend roots on both ports');
+    phase = 'real signup';
     await page.goto(frontend + '/auth/signup', {waitUntil: 'domcontentloaded'});
     await page.getByPlaceholder('Username', {exact: true}).waitFor();
     await snapshot(page, 'signup');
@@ -172,8 +182,8 @@ async function main() {
     }
     console.log('Real frontend/backend account integration passed; RCC games and rendering remain separate tests.');
   } catch (error) {
-    fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({passed, error:error.message, errors, serverFailures, externalRequests:[...externalRequests]}, null, 2));
-    const diagnostic = JSON.stringify({message:error.message, passed, errors, serverFailures, externalRequests:[...externalRequests]}).slice(0, 3500);
+    fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({passed, phase, error:error.message, errors, serverFailures, networkFailures, externalRequests:[...externalRequests]}, null, 2));
+    const diagnostic = JSON.stringify({message:error.message, phase, passed, errors, serverFailures, networkFailures, externalRequests:[...externalRequests]}).slice(0, 3500);
     if (process.env.GITHUB_ACTIONS === 'true') console.error('::error title=Real website regression::' + diagnostic.replaceAll('%','%25').replaceAll('\r','%0D').replaceAll('\n','%0A'));
     throw error;
   } finally {await browser.close();}
