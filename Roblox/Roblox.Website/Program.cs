@@ -47,6 +47,8 @@ Roblox.Configuration.ScriptDirectory = configuration.GetSection("Directories:Scr
 Roblox.Configuration.AdminBundleDirectory = configuration.GetSection("Directories:AdminBundle").Value!;
 Roblox.Configuration.EconomyChatBundleDirectory = configuration.GetSection("Directories:EconomyChatBundle").Value!;
 Roblox.Configuration.BaseUrl = configuration.GetSection("BaseUrl").Value!;
+Roblox.Configuration.FrontendBaseUrl = configuration["FrontendBaseUrl"] ?? "http://localhost:3000";
+Roblox.Website.Lib.FrontendProxyTarget.ParseBaseUrl(Roblox.Configuration.FrontendBaseUrl);
 Roblox.Configuration.LocalRegistrationEnabled = configuration.GetValue<bool>("LocalRegistrationEnabled");
 Roblox.Configuration.ShortBaseUrl = Roblox.Configuration.BaseUrl!.Replace("https://www.", "");
 Roblox.Libraries.Captcha.HCaptcha.Configure(configuration.GetValue<bool?>("HCaptcha:Enabled"),

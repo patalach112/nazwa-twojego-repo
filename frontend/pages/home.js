@@ -14,7 +14,7 @@ export default function AuthenticatedHomePage() {
   );
 }
 
-export const getStaticProps = () => {
+export const getServerSideProps = async () => {
   return {
     props: {
       title: 'Home - Marine',

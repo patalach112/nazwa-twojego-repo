@@ -8,6 +8,7 @@ if (!fs.existsSync(configPath)) {
   throw new Error('Configuration could not be found at location: ' + configPath);
 }
 const config = JSON.parse(fs.readFileSync(configPath).toString('utf-8'));
+const {backendOrigin} = require('./lib/backendProxy.cjs');
 
 module.exports = {
   reactStrictMode: true,
@@ -15,10 +16,9 @@ module.exports = {
   publicRuntimeConfig: config.publicRuntimeConfig,
   // Direct frontend previews still use relative URLs for the backend Razor forms.
   async rewrites() {
-    return [{
-      source: '/auth/:path*',
-      destination: config.publicRuntimeConfig.backend.baseUrl.replace(/\/+$/, '') + '/auth/:path*',
-    }];
+    const backend = backendOrigin(config);
+    return ['auth', 'css', 'js', 'UnsecuredContent', 'images', 'thumbs', 'Feeds', 'internal', 'admin-api', 'chat']
+      .map(prefix => ({source: '/' + prefix + '/:path*', destination: backend + '/' + prefix + '/:path*'}));
   },
   async redirects() {
     return [

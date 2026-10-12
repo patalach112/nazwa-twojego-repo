@@ -34,7 +34,8 @@ thumbnail loading, fonts, logo preferences, clipped navigation and horizontal
 page overflow. Legacy logo presets without bundled images fall back to the
 default instead of requesting nonexistent files.
 Login navigation is checked against `/auth/accountlogin`, the existing Razor
-password/2FA form; `/login` redirects there rather than importing an external
+password/2FA form; signup links use `/auth/signup` (local accounts when enabled,
+otherwise the original application flow). `/login` redirects rather than importing an external
 cookie or calling a disabled authentication API. Direct Next previews rewrite
 `/auth/*` to the configured backend using relative browser URLs.
 
@@ -53,3 +54,18 @@ boundaries and captcha-free invalid login. Real successful login and client
 joins still need their own end-to-end tests. Original private signing keys
 remain compromised, and removal of the global CSRF gate remains an intentional
 security downgrade described in the root README.
+
+## Container routing
+
+`serverRuntimeConfig.backend.baseUrl` can point Next at an internal backend
+service without exposing that address as the browser's API origin. Public URLs
+must match `publicRuntimeConfig.backend.baseUrl` exactly (scheme, host and port)
+and are remapped by the proxy. Existing configs without the private URL keep
+using their public backend URL. Server authorization stays private.
+
+The website's `FrontendBaseUrl` defaults to `http://localhost:3000`; containers
+use `http://frontend:3000`. The website proxy preserves methods, bodies, cookies
+and binary data, routes `/api/proxy` to Next and does not share personalized
+HTML in a URL-only cache. Auth forms use the already-bundled Bootstrap assets
+rather than requiring external CDNs. Pages using runtime configuration render
+on the server instead of baking a build-time deployment URL into static HTML.

@@ -15,7 +15,7 @@ const EarnHelp = props => {
     );
 }
 
-export const getStaticProps = () => {
+export const getServerSideProps = async () => {
     return {
         props: {
             title: 'Earning Robux - Marine',

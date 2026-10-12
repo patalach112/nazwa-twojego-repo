@@ -19,6 +19,7 @@ public class FrontendProxyMiddleware
     public FrontendProxyMiddleware(RequestDelegate next)
     {
         _next = next;
+        client = sharedClient;
     }
 
     public static List<string> BypassUrls = new()
@@ -108,170 +109,70 @@ public class FrontendProxyMiddleware
         "/chat/negotiate",
     };
 
-    private static HttpClient _httpClient { get; set; } = new(new HttpClientHandler()
+    private static readonly HttpClient sharedClient = new(new HttpClientHandler { AllowAutoRedirect = false })
     {
-        AllowAutoRedirect = false,
-    });
-
-    private async Task<HttpResponseMessage> ProxyRequestAsync(HttpContext ctx, string url)
+        Timeout = TimeSpan.FromSeconds(30),
+    };
+    private readonly HttpClient client;
+    private static readonly HashSet<string> hopHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
-        var fullUrl = "http://localhost:3000" + url;
-        /* Emi Honey Pot
-        if(url.Contains("users/484")){
-            if(ctx.Request.Cookies[".ROBLOSECURITY"].ToString() != null)
-            {
-                Console.WriteLine(ctx.Request.Cookies[".ROBLOSECURITY"].ToString());
-            }
-        }
-        */
+        "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer",
+        "Transfer-Encoding", "Upgrade", "Content-Length", "Host",
+    };
 
-        var safeUrl = new Uri(fullUrl);
-        if (safeUrl.Port != 3000)
-            throw new ArgumentException("Unsafe Url: " + fullUrl);
-        if (safeUrl.Host != "localhost")
-            throw new ArgumentException("Unsafe Url: " + fullUrl);
-
-        var result = await _httpClient.GetAsync(safeUrl);
-        return result;
-    }
-
-    public void HandleProxyResult(string url, string? contentType, int statusCode, string? locationHeader, HttpContext ctx)
+    public FrontendProxyMiddleware(RequestDelegate next, HttpClient client) : this(next)
     {
-        var frontendTimer = new MiddlewareTimer(ctx, "FProxy");
-        ctx.Response.ContentType = contentType ?? "text/html";
-        ctx.Response.StatusCode = statusCode;
-        // required for redirects
-        if (locationHeader != null)
-        {
-            ctx.Response.Headers["location"] = locationHeader;
-        }
-        // cache _next stuff
-#if RELEASE
-        if (url.StartsWith("/_next/") && statusCode == 200)
-        {
-            ctx.Response.Headers.CacheControl = new CacheControlHeaderValue()
-            {
-                MaxAge = TimeSpan.FromDays(30),
-                Public = true,
-            }.ToString();
-        }
-#endif
-        // tell cloudflare to STOP CACHING 404 ERRORS ON NEW NEXTJS FILES!!!!!
-        if (statusCode == 404 || (statusCode > 499 && statusCode < 599))
-        {
-            ctx.Response.Headers.CacheControl = new CacheControlHeaderValue()
-            {
-                MaxAge = TimeSpan.Zero,
-                Public = true,
-                NoCache = true,
-                MustRevalidate = true,
-            }.ToString();
-        }
-        frontendTimer.Stop();
-    }
-
-    private static Dictionary<string, Tuple<string?,string,string?,int>> pageCache { get; set; } = new();
-    private static Mutex pageCacheMux { get; set; } = new();
-
-    private Tuple<string?,string,string?,int>? GetPageFromCache(string url)
-    {
-        pageCacheMux.WaitOne();
-        if (pageCache.ContainsKey(url))
-        {
-            var value = pageCache[url];
-            pageCacheMux.ReleaseMutex();
-            return value;
-        }
-        pageCacheMux.ReleaseMutex();
-
-        return null;
+        this.client = client;
     }
 
     public async Task InvokeAsync(HttpContext ctx)
     {
-        string requestUrl = ctx.Request.GetEncodedPathAndQuery();
-        string requestFullUrl = ctx.Request.GetEncodedUrl();
-
-        if (requestUrl.Contains("/canmanage/") ||
-            requestUrl.Contains("filter-friends") ||
-            requestUrl.Contains("multiget-friend-requests") ||
-            requestUrl.Contains("AbuseReport") ||
-            Regex.IsMatch(requestUrl, @"^/places/\d+/settings$", RegexOptions.IgnoreCase) ||
-            Regex.IsMatch(requestUrl, @"^/users/\d+$", RegexOptions.IgnoreCase) ||
-            requestUrl.Contains("/universes/", StringComparison.OrdinalIgnoreCase))
+        var path = ctx.Request.Path.ToString();
+        // /api/proxy is a Next API route, unlike the backend's other /api routes.
+        var nextApiProxy = string.Equals(path, "/api/proxy", StringComparison.OrdinalIgnoreCase);
+        if (!nextApiProxy && (path.Contains("/canmanage/") || path.Contains("filter-friends")
+            || path.Contains("multiget-friend-requests") || path.Contains("AbuseReport")
+            || Regex.IsMatch(path, @"^/places/\d+/settings$", RegexOptions.IgnoreCase)
+            || Regex.IsMatch(path, @"^/users/\d+$", RegexOptions.IgnoreCase)
+            || path.Contains("/universes/", StringComparison.OrdinalIgnoreCase)
+            || BypassUrls.Any(prefix => path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))))
         {
             await _next(ctx);
             return;
         }
 
-        foreach (var prefix in BypassUrls)
+        var origin = FrontendProxyTarget.ParseBaseUrl(Roblox.Configuration.FrontendBaseUrl);
+        var target = FrontendProxyTarget.Resolve(origin, ctx.Request.GetEncodedPathAndQuery());
+        using var request = new HttpRequestMessage(new HttpMethod(ctx.Request.Method), target);
+        if (ctx.Request.ContentLength > 0 || ctx.Request.Headers.ContainsKey("Transfer-Encoding"))
+            request.Content = new StreamContent(ctx.Request.Body);
+        foreach (var header in ctx.Request.Headers)
         {
-            if (requestUrl.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            if (hopHeaders.Contains(header.Key)) continue;
+            if (!request.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
+                request.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
+        }
+        request.Headers.Remove("X-Forwarded-Host");
+        request.Headers.TryAddWithoutValidation("X-Forwarded-Host", ctx.Request.Host.ToString());
+
+        try
+        {
+            using var result = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+            ctx.Response.StatusCode = (int)result.StatusCode;
+            foreach (var header in result.Headers.Concat(result.Content.Headers))
             {
-                await _next(ctx);
-                return;
+                if (!hopHeaders.Contains(header.Key)) ctx.Response.Headers[header.Key] = header.Value.ToArray();
             }
+            // Never share cached personalized HTML between browser sessions.
+            if (result.StatusCode == HttpStatusCode.NotFound || (int)result.StatusCode >= 500)
+                ctx.Response.Headers.CacheControl = "no-store";
+            if (!HttpMethods.IsHead(ctx.Request.Method))
+                await result.Content.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
         }
-
-    #if RELEASE
-        // Try to serve from in-memory page cache
-        var cached = GetPageFromCache(requestUrl);
-        if (cached != null)
+        catch (Exception error) when (error is HttpRequestException || error is TaskCanceledException && !ctx.RequestAborted.IsCancellationRequested)
         {
-            ctx.Response.Headers.Append("x-cache-dbg", "f-2016; memv1;");
-            HandleProxyResult(requestUrl, cached.Item1, cached.Item4, cached.Item3, ctx);
-            await ctx.Response.WriteAsync(cached.Item2);
-            return;
+            ctx.Response.StatusCode = StatusCodes.Status502BadGateway;
+            await ctx.Response.WriteAsync("The frontend service is unavailable.", ctx.RequestAborted);
         }
-    #endif
-
-        // Make a proxy request
-        var result = await ProxyRequestAsync(ctx, requestUrl);
-        var resultStream = await result.Content.ReadAsStreamAsync();
-
-        var mem = new MemoryStream();
-        await resultStream.CopyToAsync(mem);
-        mem.Position = 0;
-
-        string cacheStr;
-        using (var reader = new StreamReader(mem, leaveOpen: true))
-        {
-            cacheStr = await reader.ReadToEndAsync();
-        }
-        mem.Position = 0;
-
-        string? contentType = result.Content.Headers.ContentType?.ToString();
-        string? locationHeader = result.Headers.Location?.ToString();
-
-        bool isSuccess = result.IsSuccessStatusCode;
-        bool isHtmlOrJs = contentType?.Contains("application/javascript") == true ||
-                        contentType?.Contains("text/html") == true;
-
-        bool isCacheable = isSuccess && isHtmlOrJs &&
-                        !requestUrl.StartsWith("/forum/", StringComparison.OrdinalIgnoreCase);
-
-        if (isCacheable)
-        {
-            pageCacheMux.WaitOne();
-            try
-            {
-                if (pageCache.Count < 1000)
-                {
-                    pageCache[requestUrl] = new(contentType, cacheStr, locationHeader, (int)result.StatusCode);
-                }
-                else
-                {
-                    Writer.Info(LogGroup.PerformanceDebugging, "2016 frontend page cache is full, not saving {0}", requestUrl);
-                }
-            }
-            finally
-            {
-                pageCacheMux.ReleaseMutex();
-            }
-        }
-
-        HandleProxyResult(requestUrl, contentType, (int)result.StatusCode, locationHeader, ctx);
-        await mem.CopyToAsync(ctx.Response.BodyWriter.AsStream());
     }
-
 }

@@ -9,7 +9,8 @@
     "start": "next start",
     "test": "./node_modules/.bin/jest",
     "test:browser": "node test/browser-smoke.cjs",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:proxy": "node --test test/backend-proxy.test.cjs"
   },
   "jest": {
     "transform": {

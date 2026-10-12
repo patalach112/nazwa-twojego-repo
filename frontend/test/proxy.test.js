@@ -18,9 +18,9 @@ describe('UrlUtilities.IsSafe()', () => {
     const result = UrlUtilities.isSafe(('https://www.roblox.com/test/goodUrl').toUpperCase());
     expect(result).eq(true);
   });
-  it('must return that a valid URL on different subdomain is safe', () => {
+  it('must reject a different subdomain', () => {
     const result = UrlUtilities.isSafe('https://api.roblox.com/test/goodUrl');
-    expect(result).eq(true);
+    expect(result).eq(false);
   });
   it('must return that a similar but invalid url is NOT safe', () => {
     for (const item of ['https://www.robloxlabs.com/test/badUrl', 'https://www.roblox.co/test/badUrl', 'https://www.roblox-com.com/test/badUrl']) {

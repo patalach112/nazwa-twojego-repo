@@ -31,6 +31,9 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Check public and internal backend URL routing
+        working-directory: frontend
+        run: npm run test:proxy
       - name: Install Chromium for real rendering and interactions
         working-directory: frontend
         run: npx playwright-core install --with-deps chromium
