@@ -15,12 +15,16 @@ profile:
    texture, stored in the configured thumbnail directory and served from its URL,
 3. an uploaded model asset gets its own, different 3D render, stored as a separate file
    and recorded as awaiting staff approval in the database (asserted, not hidden),
-4. an account's own avatar comes back from RCC's shipped Avatar_R15_Action.lua as a
-   420x420 image of a real character, not a blank or a fallback: the render has to carry
-   many distinct colours, which a solid or placeholder image cannot,
-5. with the renderer stopped the upload and delivery still work and nothing claims a
+4. an account's own avatar is rendered through the website itself: posting to the
+   website's redraw endpoint makes it store an avatar thumbnail and a headshot under the
+   configured thumbnail directory, report them through the same thumbnail API the
+   frontend calls, and serve the pixels behind the browser URL it gives out - and the
+   stored image has to look like a character, not a background,
+5. RCC renders that account's avatar directly too, through its shipped
+   Avatar_R15_Action.lua, so the renderer can be told apart from the website around it,
+6. with the renderer stopped the upload and delivery still work and nothing claims a
    finished thumbnail,
-6. a caller without the Authorization value, and an endpoint the renderer does not
+7. a caller without the Authorization value, and an endpoint the renderer does not
    implement, are refused instead of returning a picture.
 """
 
@@ -62,6 +66,13 @@ RENDERER_URL = "http://127.0.0.1:" + os.environ.get("RENDERER_PORT", "3521")
 RENDERER_ASSET_BASE = "https://www.silrev.biz:5000"
 THUMBNAIL_EDGE = 420
 RENDER_TIMEOUT = int(os.environ.get("RENDERER_TEST_TIMEOUT", "240"))
+# The website's own avatar flow renders a headshot and an avatar and then writes both
+# files, so it needs longer than one render.
+AVATAR_TIMEOUT = int(os.environ.get("RENDERER_AVATAR_TIMEOUT", "300"))
+# An avatar render is 420x420 and the website resizes the stored images: 352x352 for the
+# avatar and 150x150 for the headshot (Roblox.Services/Users/Avatar.cs).
+AVATAR_EDGE = 352
+HEADSHOT_EDGE = 150
 WARMUP_TIMEOUT = int(os.environ.get("RENDERER_WARMUP_TIMEOUT", "300"))
 MODEL_FIXTURE = ROOT / "RCCService/RCCService2020/ExtraContent/models/AvatarContextMenu/AvatarContextArrow.rbxm"
 APPROVED = 1
@@ -170,6 +181,53 @@ def thumbnail_state(client, backend, asset_id):
     return json.loads(body)["data"][0]
 
 
+def user_avatar_thumbnail(client, backend, user_id, kind="avatar"):
+    """The website's own answer for an account's avatar thumbnail, like the frontend asks.
+
+    The frontend calls these two endpoints (`users/avatar` and `users/avatar-headshot`;
+    `frontend/services/thumbnails.js`) with the session cookie, and prefixes a relative
+    image URL with the public base URL. This is the same question the browser asks, not
+    a database read dressed up as one.
+    """
+    status, _, body = client.get(f"{backend}/apisite/thumbnails/v1/users/{kind}"
+                                 f"?userIds={int(user_id)}")
+    if status != 200:
+        fail(f"the {kind} thumbnail API answered HTTP {status}: "
+             f"{body.decode('utf-8', 'replace')[:200]}")
+    entries = json.loads(body).get("data") or []
+    return entries[0] if entries else {"state": "Pending", "imageUrl": None}
+
+
+def wait_for_user_avatar(client, backend, user_id, timeout, kind="avatar"):
+    """Waits for the website to report the account's own avatar as rendered."""
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        last = user_avatar_thumbnail(client, backend, user_id, kind)
+        if last.get("state") == "Completed" and last.get("imageUrl"):
+            return last
+        time.sleep(4)
+    return last
+
+
+def browser_url_for(image_url, public_base):
+    """The URL a browser ends up loading for a thumbnail the website reported.
+
+    The frontend prefixes a relative imageUrl with its public base URL (addBaseUrl in
+    frontend/services/thumbnails.js), so a relative stored URL still has to answer from
+    that origin for the picture to appear.
+    """
+    resolved = (image_url if urllib.parse.urlsplit(image_url).scheme
+                else public_base.rstrip("/") + urllib.parse.urlsplit(image_url).path)
+    # A thumbnail URL that points somewhere else is either a misconfigured CDN base or a
+    # leak of production config into a local run; fetching it would leave this stack.
+    reported, public = urllib.parse.urlsplit(resolved), urllib.parse.urlsplit(public_base)
+    if (reported.scheme, reported.netloc) != (public.scheme, public.netloc):
+        fail(f"the thumbnail URL {resolved} leaves the local stack for "
+             f"{reported.scheme}://{reported.netloc}; the browser would load it from there")
+    return resolved
+
+
 def thumbnail_rows(database, asset_id):
     """Stored thumbnail rows, without treating "no row yet" as an error."""
     output = run_stack("exec", "-T", "postgres", "psql", "--username", "postgres",
@@ -229,6 +287,27 @@ def renderer_log_lines(pattern, tail=800, keep=40, cap=3500):
     kept = [line.strip() for line in (result.stdout + result.stderr).splitlines() if matcher.search(line)]
     if not kept:
         return f"no line of the renderer log matched {pattern} in its last {tail} lines"
+    return scrub(" | ".join(kept[-keep:])[-cap:])
+
+
+def website_log_lines(pattern, tail=800, keep=40, cap=3500):
+    """The website container's own log lines matching ``pattern``.
+
+    The website is the half of the avatar flow that owns the ten-second render client,
+    the database writes and the files, so the reason a redraw stayed pending is usually
+    written there rather than in the renderer. Same rules as the renderer log: a
+    diagnostic that reports its own failure and never prints a secret.
+    """
+    try:
+        result = subprocess.run(["bash", "scripts/local-stack.sh", "logs", "--no-color",
+                                 "--tail", str(tail), "website"],
+                                cwd=ROOT, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"the website log could not be read: {type(error).__name__}: {error}"
+    matcher = re.compile(pattern)
+    kept = [line.strip() for line in (result.stdout + result.stderr).splitlines() if matcher.search(line)]
+    if not kept:
+        return f"no line of the website log matched {pattern} in its last {tail} lines"
     return scrub(" | ".join(kept[-keep:])[-cap:])
 
 
@@ -550,7 +629,7 @@ def main():
         # 1b. The enabled value is the one the renderer holds: a caller without it, or
         #     with a wrong one, is refused further down. This is asserted, not assumed.
         status, body = wait_for_renderer_authorization(authorization)
-        notice(f"the renderer accepted the enabled Authorization value (HTTP {status} for a probe request)")
+        accepted_status = status
 
         # 5. Refusals first: they must not need a working render.
         status, body = renderer_post("/image/image", {"assetId": 1}, authorization=None)
@@ -565,7 +644,11 @@ def main():
         status, body = renderer_post("/image/clothing", {"assetId": 1}, authorization=authorization)
         if status != 501 or "mannequin" not in body.get("message", ""):
             fail(f"clothing must stay pending with a concrete reason, got HTTP {status}: {body}")
-        notice("the renderer refuses missing secrets and names what an unimplemented endpoint needs")
+        # One notice for the whole authorization story: GitHub publishes only the first
+        # ten of a step, and the run has eight other things to report.
+        notice(f"the renderer answers only the enabled Authorization value "
+               f"(a probe request with it answered HTTP {accepted_status}; without one and "
+               "with a wrong one it refuses) and names what an unimplemented endpoint needs")
 
         # 2. Real image assets: two different uploaded textures must produce two
         #    different renders, each showing its own colour. That is what separates a
@@ -647,7 +730,68 @@ def main():
         notice(f"model asset {model_id} rendered its own 3D thumbnail, stored as {key} "
                f"(awaiting approval {moderation}) and served at {model_entry['imageUrl']}")
 
-        # 3b. The avatar path: RCC's own Avatar_R15_Action.lua loads the account's
+        # 3b. The account's own avatar, the way the browser gets it: the website's
+        #     redraw endpoint renders a headshot and the avatar through RenderingHandler,
+        #     writes both files under the configured thumbnail directory and points
+        #     user_avatar at them. The endpoint answering 2xx is not the point - the
+        #     stored file, the URL the thumbnail API reports and the pixels behind the
+        #     browser URL it resolves to are.
+        status, _, body = owner.post_json(
+            f"{backend}/apisite/avatar/v1/avatar/redraw-thumbnail", {})
+        if status not in (200, 204):
+            fail(f"the website's avatar redraw endpoint answered HTTP {status}: "
+                 f"{body.decode('utf-8', 'replace')[:200]}")
+        entry = wait_for_user_avatar(owner, backend, owner_id, AVATAR_TIMEOUT)
+        if entry.get("state") != "Completed" or not entry.get("imageUrl"):
+            fail(f"the website did not report the owner's avatar as rendered within "
+                 f"{AVATAR_TIMEOUT}s (the API says {entry}); the database says "
+                 + " ".join(psql(database, "SELECT coalesce(thumbnail_url, '<null>'), "
+                                           "coalesce(headshot_thumbnail_url, '<null>') "
+                                           f"FROM user_avatar WHERE user_id = {owner_id};"))
+                 + "; the website said: "
+                 + website_log_lines(r"RenderingHandler|RedrawAvatar|avatar|thumbnail|"
+                                     r"Exception|Failed to save", tail=2000)
+                 + "; the renderer said: "
+                 + renderer_log_lines(r"/player/(thumbnail|headshot)|render_|Timeout|"
+                                      r"Traceback|Error", tail=2000))
+        image_url = entry["imageUrl"]
+        served_path = urllib.parse.urlsplit(image_url).path
+        if not re.fullmatch(r"/images/thumbnails/[0-9a-f]{64}_thumbnail\.png", served_path):
+            fail(f"the avatar thumbnail is served from {served_path}, not "
+                 "/images/thumbnails/<avatar hash>_thumbnail.png")
+        stored = thumbnail_file(thumbnails_directory, image_url)
+        url = browser_url_for(image_url, frontend)
+        # A plain GET without a session: the <img> on the profile page has to work the
+        # same way for anyone who can see the profile.
+        status, _, served = Client().get(url)
+        if status != 200 or served != stored.read_bytes():
+            fail(f"the browser URL {url} answered HTTP {status} with {len(served)} bytes, "
+                 f"not the {len(stored.read_bytes())} bytes the website stored")
+        width, height, rows = read_png(served)
+        if (width, height) != (AVATAR_EDGE, AVATAR_EDGE):
+            fail(f"the stored avatar thumbnail is {width}x{height}, not the "
+                 f"{AVATAR_EDGE}x{AVATAR_EDGE} the website resizes RCC's render to")
+        shades = [colour_at(rows, width, x, y)
+                  for x in range(0, width, 16) for y in range(0, height, 16)]
+        dominant = max(set(shades), key=shades.count)
+        differing = sum(1 for shade in shades if shade != dominant)
+        if differing < len(shades) // 10:
+            fail(f"the stored avatar thumbnail is a background: only {differing} of "
+                 f"{len(shades)} sampled pixels differ from {dominant}")
+        headshot = wait_for_user_avatar(owner, backend, owner_id, 30, "avatar-headshot")
+        if headshot.get("state") != "Completed" or not headshot.get("imageUrl"):
+            fail(f"the website stored no headshot for the owner: {headshot}")
+        headshot_path = thumbnail_file(thumbnails_directory, headshot["imageUrl"])
+        headshot_width, headshot_height, _ = read_png(headshot_path.read_bytes())
+        if (headshot_width, headshot_height) != (HEADSHOT_EDGE, HEADSHOT_EDGE):
+            fail(f"the stored headshot is {headshot_width}x{headshot_height}, not "
+                 f"{HEADSHOT_EDGE}x{HEADSHOT_EDGE}")
+        notice(f"the owner's own avatar is rendered, stored and served the way the browser "
+               f"asks for it: {served_path} ({width}x{height}, {differing}/{len(shades)} "
+               f"sampled pixels away from the background) and a "
+               f"{headshot_width}x{headshot_height} headshot")
+
+        # 3c. The renderer on its own: RCC's own Avatar_R15_Action.lua loads the account's
         #     character inside RCC and clicks it. A 200 alone is not success, so the
         #     render has to be a 420x420 PNG with the colours of a shaded character -
         #     a blank, a solid background or one of the fallbacks the shipped scripts

@@ -161,7 +161,8 @@ ASSET_IMPORT_TEST=1 python3 scripts/test_asset_import.py
 It refuses to run against a non-`*_tests` configuration. Avatar thumbnails, the
 remaining panel screens that need a renderer and game joins are **not** covered by
 this check; a green run proves the local import/delivery path and that the panel is
-served and gated, not that rendering works.
+served and gated, not that rendering works. Avatar thumbnails through the website are
+covered by `scripts/test_local_renderer.py` instead, with the renderer profile on.
 
 ## Optional renderer profile
 
@@ -201,9 +202,12 @@ renderer.
 `scripts/test_local_renderer.py` proves the whole path against a disposable `*_tests`
 stack: uploads through the real admin API, the website's own render
 requests, RCC under Wine, the 420x420 PNG in `docker/local/data/thumbnails/`, the
-served thumbnail URL, a model render that differs from the texture render, refusals
-for a missing Authorization value and for unimplemented endpoints, and that stopped
-rendering leaves the asset usable with a pending thumbnail.
+served thumbnail URL, a model render that differs from the texture render, an account's
+own avatar - posted to the website's `redraw-thumbnail` endpoint, stored as the avatar
+thumbnail and headshot, reported through the same thumbnail API the frontend calls and
+downloaded from the origin the browser uses - refusals for a missing Authorization
+value and for unimplemented endpoints, and that stopped rendering leaves the asset
+usable with a pending thumbnail.
 
 ## Still outside this stack
 

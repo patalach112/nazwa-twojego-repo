@@ -196,10 +196,14 @@ RCC --https--> www.silrev.biz:5000 (compose network alias, renderer container)
 
 ## What is not proven
 
-`scripts/test_local_renderer.py` covers image assets (two different textures, checked
-pixel by pixel) and model assets through the real website, and it reports the result of
-the avatar render RCC actually produced instead of assuming one. The hat, mesh, headshot and
-clothing routes are implemented (or refused with a reason) but **not covered by that
-test**, so they are unproven. Place thumbnails, animations, packages, body parts and
-the `-thumbnail3d` objects are unimplemented on purpose. No client-visible claim is made
+`scripts/test_local_renderer.py` covers, through the real website: image assets (two
+different textures, checked pixel by pixel), model assets, and an account's own avatar -
+the last one end to end, from the website's redraw endpoint to the stored avatar
+thumbnail and headshot and the pixels behind the URL the thumbnail API hands the
+frontend, which is what the browser loads. The avatar image has to look like a character
+and not like a background, and the pixels are re-checked after the website's own resize.
+The hat, mesh, headshot and clothing *routes* are implemented (or refused with a reason)
+but not each covered by their own case, so a hat or mesh render is unproven
+outside the avatar path; the `-thumbnail3d` objects, place thumbnails, animations,
+packages and body parts are unimplemented on purpose. No client-visible claim is made
 about any of them.

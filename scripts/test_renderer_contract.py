@@ -1114,6 +1114,63 @@ class NoticeBudgetTest(unittest.TestCase):
                 self.module.job_summary('writing to a directory must not raise')
 
 
+class WebsiteAvatarCheckTest(unittest.TestCase):
+    """The avatar step drives the website, the way the browser does, and stays local.
+
+    The frontend asks for these thumbnails through the two endpoints below and prefixes a
+    relative answer with its own origin, so the step has to ask the same endpoints and
+    fetch the same origin. It must never fetch a URL that points outside this stack, and
+    the sizes it expects have to be the ones the website itself resizes to.
+    """
+
+    def setUp(self):
+        os.environ.pop('RENDERER_TEST', None)
+        spec = importlib.util.spec_from_file_location('local_renderer_avatar',
+                                                      ROOT / 'scripts/test_local_renderer.py')
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def test_it_asks_the_endpoints_the_frontend_asks(self):
+        frontend = (ROOT / 'frontend/services/thumbnails.js').read_text()
+        for endpoint in ('/v1/users/avatar?userIds=', '/v1/users/avatar-headshot?userIds='):
+            self.assertIn(endpoint, frontend)
+        source = (ROOT / 'scripts/test_local_renderer.py').read_text()
+        self.assertIn('/apisite/thumbnails/v1/users/', source)
+        # The avatar redraw endpoint is the frontend's own "Redraw" button.
+        self.assertIn('redraw-thumbnail', source)
+        self.assertIn('redrawMyAvatar', (ROOT / 'frontend/services/avatar.js').read_text())
+
+    def test_it_expects_the_sizes_the_website_resizes_to(self):
+        website = (ROOT / 'Roblox/Roblox.Services/Users/Avatar.cs').read_text()
+        self.assertIn(f'(headshotResult, {self.module.HEADSHOT_EDGE}, '
+                      f'{self.module.HEADSHOT_EDGE})', website)
+        self.assertIn(f'(thumbnailResult, {self.module.AVATAR_EDGE}, '
+                      f'{self.module.AVATAR_EDGE})', website)
+        # ... and the stored names the step looks for are the ones the website writes.
+        self.assertIn('{avatarHash}_thumbnail.png', website)
+        self.assertIn('{avatarHash}_headshot.png', website)
+
+    def test_it_compares_the_served_bytes_with_the_file_on_disk(self):
+        source = (ROOT / 'scripts/test_local_renderer.py').read_text()
+        self.assertIn('served != stored.read_bytes()', source)
+
+    def test_it_refuses_a_thumbnail_url_that_leaves_the_stack(self):
+        self.assertEqual(
+            self.module.browser_url_for('/images/thumbnails/a.png', 'http://localhost:3000'),
+            'http://localhost:3000/images/thumbnails/a.png')
+        self.assertEqual(
+            self.module.browser_url_for('http://localhost:3000/images/thumbnails/a.png',
+                                        'http://localhost:3000'),
+            'http://localhost:3000/images/thumbnails/a.png')
+        # A deliberate negative check: the refusal must not be published as a failure of
+        # the job, which is what printing through fail() would do in Actions.
+        import test_asset_import
+        with mock.patch.object(test_asset_import, 'annotate_failures', False), \
+                contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.module.browser_url_for('https://cdn.example.com/images/thumbnails/a.png',
+                                        'http://localhost:3000')
+
+
 class PixelReaderTest(unittest.TestCase):
     """The integration test judges pixels, so its reader has to be exact."""
 
