@@ -104,8 +104,9 @@ Roblox.Configuration.RobloxAppPrefix = "rbxeconsimdev:";
 #endif
 FeatureFlags.StartUpdateFlagTask();
 var ownerUserIdConfig = configuration.GetSection("OwnerUserId");
-List<long> ownerUserIds = ownerUserIdConfig.Get<List<long>>()!;
-Roblox.Website.Filters.StaffFilter.Configure(ownerUserIds!);
+// Configuration binding returns null for an empty JSON array.
+var ownerUserIds = ownerUserIdConfig.Get<List<long>>() ?? new List<long>();
+Roblox.Website.Filters.StaffFilter.Configure(ownerUserIds);
 //Roblox.Website.Controllers.ThumbnailsControllerV1.StartThumbnailFixLoop();
 
 builder.Services.AddScoped<GameServerService>();

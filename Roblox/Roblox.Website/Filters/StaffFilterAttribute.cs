@@ -10,9 +10,9 @@ namespace Roblox.Website.Filters;
 public class StaffFilter : ActionFilterAttribute, IAsyncActionFilter
 {
     private static List<long> ownerUserId { get; set; } = new List<long>();
-    public static void Configure(List<long> newOwnerUserId)
+    public static void Configure(List<long>? newOwnerUserId)
     {
-        ownerUserId = newOwnerUserId;
+        ownerUserId = newOwnerUserId?.ToList() ?? new List<long>();
         Console.WriteLine("[info] owner = {0}",ownerUserId);
     }
 
