@@ -496,7 +496,8 @@ def browser_image(client, base, path, what, limit=5):
             url = location if location.startswith("http") else base.rstrip("/") + location
             continue
         if status != 200:
-            fail(f"{what} ({path}) answered HTTP {status}: {body[:200]!r}")
+            fail(f"{what} ({path}) answered HTTP {status} with "
+                 f"{sorted(headers)} and body {body[:200]!r}")
         if "placeholder" in url or "blocked" in url:
             fail(f"{what} ({path}) ended at {url}, which is a placeholder, not a picture")
         return url, body

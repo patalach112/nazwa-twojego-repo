@@ -129,6 +129,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class Headers(dict):
+    """Response headers with case-insensitive lookup.
+
+    HTTP header names are case-insensitive, and a proxy in front of the website is free
+    to change their case: the frontend's own rewrite in ``next.config.js`` forwards the
+    website's ``Location`` header as ``location``. A plain dict lookup would miss it and
+    report a redirect as "answered HTTP 302" with nothing to follow.
+    """
+
+    def get(self, name, default=None):
+        for key, value in self.items():
+            if key.lower() == name.lower():
+                return value
+        return default
+
+    def __contains__(self, name):
+        return any(key.lower() == name.lower() for key in self.keys())
+
+
 class Client:
     """Small HTTP client with explicit cookies; it never follows redirects.
 
@@ -164,7 +183,7 @@ class Client:
             name, _, rest = value.partition("=")
             if name.strip():
                 self.cookies[name.strip()] = rest.split(";", 1)[0]
-        return response.status, dict(response.headers), response.read()
+        return response.status, Headers(response.headers), response.read()
 
     def get(self, url):
         return self.request("GET", url)

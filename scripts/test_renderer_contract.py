@@ -1171,6 +1171,84 @@ class WebsiteAvatarCheckTest(unittest.TestCase):
                                         'http://localhost:3000')
 
 
+class PageImageHandlerTest(unittest.TestCase):
+    """A page's own <img> goes through the website's image handlers, not the API.
+
+    Those handlers answer with a redirect to the stored file, and that redirect is served
+    by whatever proxy the page is loaded through: the frontend's rewrite in
+    ``next.config.js`` forwards the website's ``Location`` header as ``location``. Header
+    names are case-insensitive, so the follower must not care, and a chain that ends on a
+    placeholder has to be reported instead of being accepted as a picture.
+    """
+
+    def setUp(self):
+        os.environ.pop('RENDERER_TEST', None)
+        spec = importlib.util.spec_from_file_location('local_renderer_redirects',
+                                                      ROOT / 'scripts/test_local_renderer.py')
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        import test_asset_import
+        self.headers = test_asset_import.Headers
+        self.import_check = test_asset_import
+
+    def test_header_lookup_ignores_the_letter_case(self):
+        headers = self.headers({'location': '/images/thumbnails/abc.png',
+                                'CONTENT-TYPE': 'image/png'})
+        self.assertEqual(headers.get('Location'), '/images/thumbnails/abc.png')
+        self.assertEqual(headers.get('Content-Type'), 'image/png')
+        self.assertIn('Location', headers)
+        self.assertIsNone(headers.get('Set-Cookie'))
+
+    def test_a_lowercase_location_is_followed_from_the_page_origin(self):
+        seen = []
+        headers = self.headers
+
+        class Stub:
+            def get(self, url):
+                seen.append(url)
+                if len(seen) == 1:
+                    return 302, headers({'location': '/images/thumbnails/abc.png'}), b''
+                return 200, headers({'content-type': 'image/png'}), b'PNG'
+
+        url, body = self.module.browser_image(Stub(), 'http://localhost:3000',
+                                              '/thumbs/asset.ashx?assetId=3', 'the probe')
+        self.assertEqual(seen[0], 'http://localhost:3000/thumbs/asset.ashx?assetId=3')
+        self.assertEqual(seen[1], 'http://localhost:3000/images/thumbnails/abc.png')
+        self.assertEqual(url, seen[1])
+        self.assertEqual(body, b'PNG')
+
+    def test_an_absolute_location_keeps_its_own_origin(self):
+        seen = []
+        headers = self.headers
+
+        class Stub:
+            def get(self, url):
+                seen.append(url)
+                if len(seen) == 1:
+                    return 302, headers({'Location': 'http://localhost:5000/images/x.png'}), b''
+                return 200, headers({}), b'PNG'
+
+        url, _ = self.module.browser_image(Stub(), 'http://localhost:3000',
+                                           '/thumbs/avatar.ashx?userId=1', 'the probe')
+        self.assertEqual(url, 'http://localhost:5000/images/x.png')
+
+    def test_a_placeholder_at_the_end_of_the_chain_is_a_failure(self):
+        headers = self.headers
+
+        class Stub:
+            def get(self, url):
+                if url.endswith('/thumbs/asset.ashx?assetId=3'):
+                    return 302, headers({'location': '/img/placeholder.png'}), b''
+                return 200, headers({}), b'a placeholder, not a picture'
+
+        self.import_check.annotate_failures = False
+        self.addCleanup(setattr, self.import_check, 'annotate_failures', True)
+        with self.assertRaises(SystemExit) as caught:
+            self.module.browser_image(Stub(), 'http://localhost:3000',
+                                      '/thumbs/asset.ashx?assetId=3', 'the probe')
+        self.assertIn('placeholder', str(caught.exception))
+
+
 class PixelReaderTest(unittest.TestCase):
     """The integration test judges pixels, so its reader has to be exact."""
 
