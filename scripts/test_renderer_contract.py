@@ -763,11 +763,14 @@ class ContainerLayoutTest(unittest.TestCase):
         self.assertIn('RCC_READY_TIMEOUT', sh)
         self.assertIn("'http://127.0.0.1:64989/'", (ROOT / 'docker/renderer/renderer.py').read_text())
 
-    def test_the_probe_asks_about_the_hosts_this_stack_uses(self):
-        # The probe is a diagnostic, so a drifted default would describe another stack.
+    def test_the_diagnostics_ask_about_the_hosts_this_stack_uses(self):
+        # The probe and the integration test are diagnostics, so a drifted default would
+        # describe another stack than the one being tested.
         environment = self.compose()['renderer']['environment']
         self.assertEqual(probe_rcc_image.DEFAULT_ASSET_BASE, environment['RENDERER_ASSET_BASE_URL'])
         self.assertEqual(probe_rcc_image.DEFAULT_WEBSITE, environment['WEBSITE_BASE_URL'])
+        import test_local_renderer
+        self.assertEqual(test_local_renderer.RENDERER_ASSET_BASE, environment['RENDERER_ASSET_BASE_URL'])
 
     def test_the_website_still_delivers_assets_without_a_renderer(self):
         # The renderer profile is optional: nothing else may depend on it.

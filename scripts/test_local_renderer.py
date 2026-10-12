@@ -26,7 +26,9 @@ import http.client
 import json
 import os
 from pathlib import Path
+import re
 import struct
+import subprocess
 import sys
 import time
 import urllib.error
@@ -51,6 +53,10 @@ from probe_rcc_image import run_probe as rcc_image_probe  # noqa: E402
 DIRECTORY = ROOT / "docker/local"
 DATA_PREFIX = "/data/"
 RENDERER_URL = "http://127.0.0.1:" + os.environ.get("RENDERER_PORT", "3521")
+# The https URL RCC is handed for asset and appearance fetches - the trusted host name
+# this stack serves itself, from docker-compose.local.yml. Diagnostics only; the contract
+# test fails when this drifts from the compose service.
+RENDERER_ASSET_BASE = "https://www.silrev.biz:5000"
 THUMBNAIL_EDGE = 420
 RENDER_TIMEOUT = int(os.environ.get("RENDERER_TEST_TIMEOUT", "240"))
 WARMUP_TIMEOUT = int(os.environ.get("RENDERER_WARMUP_TIMEOUT", "300"))
@@ -199,6 +205,70 @@ def rcc_image_report(asset_id):
         return rcc_image_probe(asset_id)
     except Exception as error:  # noqa: BLE001 - a diagnostic must never hide the failure
         return f"the RCC image probe could not run: {type(error).__name__}: {error}"
+
+
+def renderer_log_lines(pattern, tail=800, keep=16):
+    """The renderer container's own log lines matching ``pattern``.
+
+    RCC's shipped Avatar.lua prints every step of an avatar render with ``[DEBUG]``, and
+    RCC logs the HTTP and script errors next to those lines, so this is where the reason
+    for a missing avatar render is written. A diagnostic: its own failure is reported, not
+    raised, and it never prints a secret.
+    """
+    try:
+        result = subprocess.run(["bash", "scripts/local-stack.sh", "logs", "--no-color",
+                                 "--tail", str(tail), "renderer"],
+                                cwd=ROOT, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"the renderer log could not be read: {type(error).__name__}: {error}"
+    matcher = re.compile(pattern)
+    kept = [line.strip() for line in (result.stdout + result.stderr).splitlines() if matcher.search(line)]
+    if not kept:
+        return f"no line of the renderer log matched {pattern} in its last {tail} lines"
+    return " | ".join(kept[-keep:])[-1400:]
+
+
+def appearance_via_terminator(user_id, asset_base):
+    """Fetches the appearance document the way RCC is told to: https, through the terminator.
+
+    The renderer container is the only place where that URL resolves, and this separates
+    "the terminator or the document is broken" from "RCC's own character load failed".
+    """
+    url = f"{asset_base}/v1.1/avatar-fetch?userId={int(user_id)}"
+    program = (
+        "import ssl, urllib.request\n"
+        f"url = {json.dumps(url)}\n"
+        "try:\n"
+        "    context = ssl.create_default_context(cafile='/home/rcc/tls/cacert.pem')\n"
+        "    with urllib.request.urlopen(url, context=context, timeout=20) as response:\n"
+        "        body = response.read()\n"
+        "        print('HTTP', response.status, len(body), 'bytes', body[:100])\n"
+        "except Exception as error:\n"
+        "    print('failed:', type(error).__name__, str(error)[:200])\n")
+    try:
+        result = subprocess.run(["bash", "scripts/local-stack.sh", "exec", "-T", "renderer",
+                                 "python3", "-"], cwd=ROOT, input=program, capture_output=True,
+                                text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"could not be checked: {type(error).__name__}: {error}"
+    return (result.stdout + result.stderr).strip().replace("\n", " | ")[-400:] or "the check printed nothing"
+
+
+def appearance_summary(backend, user_id):
+    """What RCC is told to load for an account, without dumping the whole document."""
+    status, _, body = Client().get(f"{backend}/v1.1/avatar-fetch?userId={int(user_id)}")
+    if status != 200:
+        return f"the appearance document answered HTTP {status}"
+    try:
+        document = json.loads(body)
+    except ValueError:
+        return "the appearance document is not JSON: " + body[:120].decode("utf-8", "replace")
+    assets = document.get("assetAndAssetTypeIds") or []
+    lists = {key: len(value) for key, value in document.items() if isinstance(value, list)}
+    return (f"the appearance document names {sorted(document)[:12]}, resolvedAvatarType="
+            f"{document.get('resolvedAvatarType')!r}, {len(assets)} asset ids "
+            f"{[entry.get('assetId') for entry in assets][:8]}, list lengths {lists}, "
+            f"bodyColors {sorted(document.get('bodyColors') or {})[:9]}")
 
 
 def wait_for_thumbnail(client, backend, database, asset_id, what, authorization=None,
@@ -568,6 +638,13 @@ def main():
         elif status in (501, 502):
             notice(f"the avatar render is not working yet and stayed pending: "
                    f"HTTP {status} - {body.get('message')}")
+            notice("what RCC was told to load: " + appearance_summary(backend, owner_id))
+            notice("the same document through the renderer's own https terminator: "
+                   + appearance_via_terminator(owner_id, RENDERER_ASSET_BASE))
+            notice("RCC's own steps for that avatar job: "
+                   + renderer_log_lines(r"\[DEBUG\]|Avatar"))
+            notice("RCC's errors around that job: "
+                   + renderer_log_lines(r"Error|error|Warning|failed|Unable", keep=10))
         else:
             fail(f"the avatar render returned HTTP {status}: {body}")
 
