@@ -10,10 +10,11 @@ job inside the renderer container (the only place that has RCC, over loopback) a
 returns RCC's answer for every URL that script could fetch.
 
 RCC 2020 accepts only the host names compiled into its binary ("%s: Trust check failed"
-for anything else), which is why the renderer hands RCC the trusted name of the local
-website instead of the compose service name. The probe therefore clicks the same asset
-through both names, over http and https, and through ``rbxassetid://`` - one job answers
-which of those RCC accepts and whether the fetch itself then succeeds. A result whose
+for anything else) and upgrades asset URLs to https, which is why the renderer hands RCC
+the trusted name of the local website over TLS instead of the compose service name. The
+probe therefore clicks the same asset through both names, with and without the port, and
+through ``rbxassetid://`` - one job answers which of those RCC accepts and whether the
+fetch itself then succeeds. A result whose
 length equals the placeholder literal in ``Image.lua`` (1239 bytes of base64) is the
 script's own fallback, not a picture, so the probe says so.
 
@@ -30,14 +31,16 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import urllib.parse
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTAINER = "renderer"
 TIMEOUT = 300
 RUNTIME = "/home/rcc/runtime"
-# The host name this build trusts for asset fetches, and the compose service the
-# renderer otherwise talks to. Both are overridable on the command line.
-DEFAULT_ASSET_BASE = "http://www.silrev.biz"
+# The URL RCC is told to fetch assets from - the trusted host name this stack answers
+# itself over https - and the compose service the renderer otherwise talks to. Both are
+# overridable on the command line.
+DEFAULT_ASSET_BASE = "https://www.silrev.biz:5000"
 DEFAULT_WEBSITE = "http://website:5000"
 # A file the website serves from api/public/img/, so a failure to load it cannot be a
 # missing asset: it separates "RCC cannot fetch anything" from "RCC cannot fetch assets".
@@ -148,15 +151,22 @@ finally:
 
 
 def url_matrix(image_id, asset_base, website_url):
-    """Every URL Image.lua could fetch, in the order the probe reports them."""
-    asset_url = f'{asset_base}/asset/?id={image_id}'
+    """Every URL Image.lua could fetch, in the order the probe reports them.
+
+    RCC upgrades asset URLs to https and connects to the port the URL names (or 443 when
+    it names none), so the asset base is tried as given, with http, and without its port.
+    """
+    parts = urllib.parse.urlsplit(asset_base)
+    trusted = parts.hostname or ''
+    port = parts.port or (443 if parts.scheme == 'https' else 80)
+    trusted_url = f'{parts.scheme or "https"}://{trusted}:{port}'
     return [
         ('asset_website_http', f'{website_url}/asset/?id={image_id}'),
-        ('asset_trusted_http', asset_url),
-        ('asset_trusted_https', asset_url.replace('http://', 'https://', 1)),
+        ('asset_trusted_https_port', f'{trusted_url}/asset/?id={image_id}'),
+        ('asset_trusted_http_port', f'http://{trusted}:{port}/asset/?id={image_id}'),
+        ('asset_trusted_https_default', f'https://{trusted}/asset/?id={image_id}'),
         ('asset_rbxassetid', f'rbxassetid://{image_id}'),
-        ('static_website_http', f'{website_url}{STATIC_PATH}'),
-        ('static_trusted_http', f'{asset_base}{STATIC_PATH}'),
+        ('static_trusted_https_port', f'{trusted_url}{STATIC_PATH}'),
     ]
 
 

@@ -19,7 +19,7 @@ RUN dpkg --add-architecture i386 \
     && apt-get install --no-install-recommends -y \
         wine wine32:i386 wine64 \
         libgl1-mesa-dri:i386 libgl1:i386 libglu1-mesa:i386 \
-        xvfb xauth tini python3 ca-certificates fonts-dejavu-core \
+        xvfb xauth tini python3 ca-certificates openssl fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 rcc
 
@@ -38,7 +38,7 @@ ENV WINEARCH=win32 \
 
 COPY rcc-wine/entrypoint.sh rcc-wine/run-wine.sh rcc-wine/healthcheck.py \
     rcc-wine/required-thumbnail-scripts.txt /usr/local/bin/
-COPY renderer/renderer.py /app/renderer.py
+COPY renderer/renderer.py renderer/asset_tls.py /app/
 COPY renderer/supervise.sh /usr/local/bin/renderer-supervise.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/run-wine.sh /usr/local/bin/renderer-supervise.sh \
     && mkdir -p /opt/rcc /app \

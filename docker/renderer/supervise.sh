@@ -9,12 +9,18 @@
 # process-group signal forwarding.
 set -eu
 
-# RCC must not fetch a thumbnail asset from anywhere but this stack. RCC only trusts the
-# host names compiled into RCCService.exe, so the renderer is configured with the website's
-# trusted alias; if that name resolves to the real internet host (the alias is missing, or
-# the stack runs somewhere DNS answers differently), refuse to start instead of rendering
-# an asset from a foreign server.
-python3 /app/renderer.py --verify-asset-host
+# RCC fetches every thumbnail asset itself, only from the host names compiled into its
+# binary, and it upgrades those URLs to https - a plain http website is answered with
+# ConnectFail before a single byte is served. This stack therefore answers the trusted
+# name itself, on https, with its own throwaway authority (docker/renderer/asset_tls.py),
+# and points RCC's CA bundle at that authority.
+python3 /app/asset_tls.py --setup
+python3 /app/asset_tls.py --serve &
+
+# The trusted name has to answer with *this container's* certificate. If it resolves to
+# the real internet host (the compose alias is missing, or DNS answers differently) or to
+# another service, refuse to start: RCC would otherwise render a foreign asset.
+python3 /app/asset_tls.py --verify
 
 /usr/local/bin/entrypoint.sh &
 rcc_launcher=$!
@@ -33,6 +39,10 @@ until python3 /usr/local/bin/healthcheck.py > /tmp/rcc-health.log 2>&1; do
     sleep 5
 done
 echo "RCC reported: $(cat /tmp/rcc-health.log)"
+
+# The launcher copies the mounted build into the runtime directory, so the CA bundle RCC
+# loads from its working directory is patched only now. setup is idempotent.
+python3 /app/asset_tls.py --setup
 
 # The renderer is the foreground process: it shuts down cleanly on SIGTERM, and tini
 # forwards the signal to RCC in the same process group.

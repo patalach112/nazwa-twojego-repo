@@ -188,11 +188,12 @@ service runs without privileges, with a read-only root, and only its own port is
 published (on `127.0.0.1`); details and limits in `docker/renderer/README.md`.
 
 RCC renders a thumbnail by fetching the asset itself, and this build trusts only the host
-names compiled into it, so the website answers to `www.silrev.biz` (plus
-`assetgame./assetdelivery.`) **as a compose network alias**: the names exist inside this
+names compiled into it *and* upgrades those fetches to https. The renderer container
+therefore answers `www.silrev.biz` (plus `assetgame./assetdelivery.`) itself, on TLS, with a
+throwaway certificate, and relays the requests to the website: the names exist inside this
 stack only, nothing is published under them, and `supervise.sh` refuses to start RCC when
-the trusted name does not resolve to the website container, so a render can never quietly
-use an asset from the real internet host.
+the name does not answer with the container's own certificate, so a render can never
+quietly use an asset from the real internet host.
 Switching the profile off (`./scripts/local-stack.sh --profile renderer down`) returns
 the stack to pending thumbnails; uploads, delivery and accounts never wait for the
 renderer.

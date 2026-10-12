@@ -19,6 +19,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import ssl
 import struct
 import sys
 import tempfile
@@ -37,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # satisfy their argument lists, and this repository must not shadow them.
 SCRIPTS = ROOT / 'RCCService/RCCService2020/internalscripts/thumbnails'
 sys.path.insert(0, str(ROOT / 'docker/renderer'))
+import asset_tls  # noqa: E402
 import renderer  # noqa: E402
 sys.path.insert(0, str(ROOT / 'scripts'))
 import configure_local_docker  # noqa: E402
@@ -720,22 +723,32 @@ class ContainerLayoutTest(unittest.TestCase):
         environment = renderer_service['environment']
         self.assertEqual(environment['RCC_VERIFY_THUMBNAIL_SCRIPTS'], '1')
         self.assertEqual(environment['WEBSITE_BASE_URL'], 'http://website:5000')
-        # RCC is given the host name this build trusts, and only this stack answers to it.
-        self.assertEqual(environment['RENDERER_ASSET_BASE_URL'], 'http://www.silrev.biz')
-        self.assertEqual(environment['RCC_BASE_URL'], 'http://www.silrev.biz')
+        # RCC is given the trusted name over https, and only this stack answers to it.
+        self.assertEqual(environment['RENDERER_ASSET_BASE_URL'], 'https://www.silrev.biz:5000')
+        self.assertEqual(environment['RCC_BASE_URL'], 'https://www.silrev.biz:5000')
+        self.assertEqual(environment['RENDERER_TLS_UPSTREAM'], 'website:5000')
+        self.assertEqual(environment['RENDERER_TLS_HOST'], 'www.silrev.biz')
+        self.assertEqual(environment['CURL_CA_BUNDLE'], '/home/rcc/tls/cacert.pem')
 
-    def test_the_trusted_host_name_is_a_local_alias_of_the_website(self):
-        aliases = self.compose()['website']['networks']['default']['aliases']
+    def test_the_trusted_host_name_is_a_local_alias_of_the_renderer(self):
+        # RCC connects to the trusted name, so whatever answers it must be inside this
+        # stack: the renderer's TLS terminator, which relays to the website.
+        aliases = self.compose()['renderer']['networks']['default']['aliases']
         self.assertIn('www.silrev.biz', aliases)
-        # RCC builds asset URLs itself from the base URL it is given, so the name it
-        # trusts has to be an alias of the local website rather than a public host.
+        self.assertIn('assetgame.silrev.biz', aliases)
         self.assertNotIn('silrev.biz', aliases, 'the bare domain is not what RCC is told to use')
+        self.assertIsNone(self.compose()['website'].get('networks'),
+                          'the website itself does not answer the trusted names')
 
     def test_the_renderer_refuses_to_start_when_the_trusted_name_is_not_local(self):
         sh = (ROOT / 'docker/renderer/supervise.sh').read_text()
-        guard = sh.index('--verify-asset-host')
+        guard = sh.index('--verify')
         self.assertLess(guard, sh.index('entrypoint.sh &'),
                         'the check must run before RCC is started')
+        self.assertIn('asset_tls.py', sh)
+        dockerfile = (ROOT / 'docker/renderer/Dockerfile').read_text()
+        self.assertIn('renderer/asset_tls.py', dockerfile)
+        self.assertIn('openssl', dockerfile, 'the terminator calls openssl for its authority')
 
     def test_the_renderer_image_builds_the_same_runtime_as_the_wine_probe(self):
         renderer_dockerfile = (ROOT / 'docker/renderer/Dockerfile').read_text()
@@ -860,13 +873,15 @@ class ProbeTest(unittest.TestCase):
         # The shipped script builds its own asset URL from the base URL it is given, so
         # the only way to know which host names RCC accepts is to click all of them.
         matrix = dict((name, url) for name, url in
-                      probe_rcc_image.url_matrix(9, 'http://www.silrev.biz', 'http://website:5000'))
+                      probe_rcc_image.url_matrix(9, 'https://www.silrev.biz:5000', 'http://website:5000'))
         self.assertEqual(matrix['asset_website_http'], 'http://website:5000/asset/?id=9')
-        self.assertEqual(matrix['asset_trusted_http'], 'http://www.silrev.biz/asset/?id=9')
-        self.assertEqual(matrix['asset_trusted_https'], 'https://www.silrev.biz/asset/?id=9')
+        self.assertEqual(matrix['asset_trusted_https_port'], 'https://www.silrev.biz:5000/asset/?id=9')
+        self.assertEqual(matrix['asset_trusted_http_port'], 'http://www.silrev.biz:5000/asset/?id=9')
+        # RCC upgrades the scheme and then connects to the default port, which is why the
+        # renderer has to answer on the port the base URL names.
+        self.assertEqual(matrix['asset_trusted_https_default'], 'https://www.silrev.biz/asset/?id=9')
         self.assertEqual(matrix['asset_rbxassetid'], 'rbxassetid://9')
-        self.assertEqual(matrix['static_website_http'], 'http://website:5000/img/Audio.png')
-        self.assertEqual(matrix['static_trusted_http'], 'http://www.silrev.biz/img/Audio.png')
+        self.assertEqual(matrix['static_trusted_https_port'], 'https://www.silrev.biz:5000/img/Audio.png')
 
     def test_the_job_is_the_json_spec_this_build_accepts(self):
         # RCC 2020 rejects a raw Lua chunk with "Attempted to execute with invalid JSON":
@@ -930,49 +945,113 @@ class RendererAssetBaseTest(unittest.TestCase):
         self.assertEqual(service.asset_base_url, service.base_url)
 
 
-class AssetHostGuardTest(unittest.TestCase):
-    """The renderer must never let RCC fetch a thumbnail asset from outside this stack."""
+class AssetTlsTest(unittest.TestCase):
+    """The trusted asset host is served by this stack over TLS, never by another host."""
 
-    @staticmethod
-    def resolver(mapping):
-        def resolve(host, port=None, type=None):
-            if host not in mapping:
-                raise OSError(f'Name or service not known: {host}')
-            return [(2, 1, 6, '', (address, port or 0)) for address in mapping[host]]
-        return resolve
+    @classmethod
+    def setUpClass(cls):
+        if shutil.which('openssl') is None:
+            raise unittest.SkipTest('openssl is needed to generate the local authority')
 
-    def test_a_name_that_resolves_to_the_website_is_accepted(self):
-        ok, message = renderer.verify_asset_host(
-            'http://www.silrev.biz', 'http://website:5000',
-            self.resolver({'www.silrev.biz': ['172.20.0.4'], 'website': ['172.20.0.4']}))
+    def authority(self, names=('www.silrev.biz',)):
+        directory = tempfile.mkdtemp(prefix='asset-tls-')
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        return asset_tls.create_authority(Path(directory) / 'tls', names=names)
+
+    def test_the_certificate_covers_the_names_rcc_is_told_to_use(self):
+        authority = self.authority(names=('www.silrev.biz', 'assetgame.silrev.biz'))
+        details = asset_tls.openssl('x509', '-in', str(authority['server_certificate']), '-noout', '-text')
+        self.assertIn('DNS:www.silrev.biz', details)
+        self.assertIn('DNS:assetgame.silrev.biz', details)
+        self.assertIn('DNS:localhost', details, 'the guard needs a name it can always reach')
+
+    def test_the_local_authority_is_kept_out_of_the_shipped_build(self):
+        # Everything the terminator writes lives in the container's tmpfs; the mounted
+        # build (RCCService/) is read-only and must stay byte-for-byte as shipped.
+        authority = self.authority()
+        for path in authority.values():
+            if hasattr(path, 'exists'):
+                self.assertNotIn(str(ROOT / 'RCCService'), str(path))
+
+    def test_the_bundle_rcc_verifies_with_carries_the_local_authority(self):
+        authority = self.authority()
+        directory = Path(tempfile.mkdtemp(prefix='asset-bundle-'))
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        shipped = directory / 'shipped.pem'
+        shipped.write_text('shipped authority\n')
+        bundle = asset_tls.local_bundle(authority['ca_certificate'], directory / 'cacert.pem', shipped)
+        text = bundle.read_text()
+        self.assertIn('shipped authority', text, 'the build\'s own authorities must survive')
+        self.assertIn(asset_tls.CA_MARKER, text)
+        self.assertIn(Path(authority['ca_certificate']).read_text().strip().splitlines()[0], text)
+        again = asset_tls.local_bundle(authority['ca_certificate'], bundle, shipped)
+        self.assertEqual(again, bundle)
+        self.assertEqual(bundle.read_text().count(asset_tls.CA_MARKER), 1,
+                         'a second call must not append the authority twice')
+
+    def test_the_guard_refuses_a_host_that_does_not_answer_with_our_certificate(self):
+        authority = self.authority()
+        other = self.authority()
+        upstream = self.serve_upstream()
+        server = asset_tls.serve(address='127.0.0.1', port=0, upstream=upstream, authority=authority)
+        self.addCleanup(server.server_close)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        ok, message = asset_tls.verify(host='localhost', port=port, authority=authority)
         self.assertTrue(ok, message)
-        self.assertIn('local website', message)
+        refused, refusal = asset_tls.verify(host='localhost', port=port, authority=other)
+        self.assertFalse(refused, refusal)
+        self.assertIn('not from elsewhere', refusal)
 
-    def test_a_name_that_resolves_elsewhere_is_refused(self):
-        ok, message = renderer.verify_asset_host(
-            'http://www.silrev.biz', 'http://website:5000',
-            self.resolver({'www.silrev.biz': ['93.184.216.34'], 'website': ['172.20.0.4']}))
+    def test_the_guard_refuses_a_name_nobody_answers(self):
+        authority = self.authority()
+        ok, message = asset_tls.verify(host='localhost', port=1, authority=authority)
         self.assertFalse(ok, message)
-        self.assertIn('93.184.216.34', message)
         self.assertIn('not from elsewhere', message)
 
-    def test_a_name_that_does_not_resolve_is_refused(self):
-        ok, message = renderer.verify_asset_host(
-            'http://www.silrev.biz', 'http://website:5000',
-            self.resolver({'website': ['172.20.0.4']}))
-        self.assertFalse(ok, message)
-        self.assertIn('does not resolve', message)
+    def test_the_terminator_relays_the_website_to_rcc_over_tls(self):
+        authority = self.authority()
+        upstream = self.serve_upstream()
+        server = asset_tls.serve(address='127.0.0.1', port=0, upstream=upstream, authority=authority)
+        self.addCleanup(server.server_close)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        context = ssl.create_default_context(cafile=str(authority['ca_certificate']))
+        request = urllib.request.Request(f'https://localhost:{server.server_address[1]}/asset/?id=7')
+        with urllib.request.urlopen(request, context=context, timeout=10) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers['Content-Type'], 'image/png')
+            self.assertEqual(response.read(), b'PNG:/asset/?id=7')
+        # A website the renderer cannot reach is reported, never faked.
+        broken = asset_tls.serve(address='127.0.0.1', port=0, upstream='127.0.0.1:1', authority=authority)
+        self.addCleanup(broken.server_close)
+        threading.Thread(target=broken.serve_forever, daemon=True).start()
+        self.addCleanup(broken.shutdown)
+        with self.assertRaises(urllib.error.HTTPError) as failure:
+            urllib.request.urlopen(f'https://localhost:{broken.server_address[1]}/asset/?id=7',
+                                   context=context, timeout=10)
+        self.assertEqual(failure.exception.code, 502)
 
-    def test_the_website_service_itself_needs_no_check(self):
-        ok, message = renderer.verify_asset_host('http://website:5000', 'http://website:5000',
-                                                 self.resolver({}))
-        self.assertTrue(ok, message)
-        self.assertIn('website service itself', message)
+    def serve_upstream(self):
+        """A stand-in website: answers the path it was asked for."""
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'PNG:' + self.path.encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/png')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
-    def test_no_asset_host_configured_is_not_a_failure(self):
-        with mock.patch.dict(os.environ, {'RENDERER_ASSET_BASE_URL': ''}):
-            ok, message = renderer.verify_asset_host(None, 'http://website:5000', self.resolver({}))
-        self.assertTrue(ok, message)
+            def log_message(self, *arguments):
+                pass
+
+        upstream = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        threading.Thread(target=upstream.serve_forever, daemon=True).start()
+        self.addCleanup(upstream.shutdown)
+        self.addCleanup(upstream.server_close)
+        return f'127.0.0.1:{upstream.server_address[1]}'
 
 
 class PixelReaderTest(unittest.TestCase):

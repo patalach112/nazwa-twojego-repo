@@ -25,9 +25,7 @@ import os
 from pathlib import Path
 import re
 import signal
-import socket
 import struct
-import sys
 import threading
 import time
 import urllib.error
@@ -64,11 +62,12 @@ HEALTH_STALE_SECONDS = float(os.environ.get('RENDERER_HEALTH_STALE', '120'))
 # a proxy for arbitrary URLs.
 APPEARANCE_PATH = '/v1.1/avatar-fetch'
 # RCC 2020 answers every asset fetch it was not compiled to trust with "Trust check
-# failed": the accepted hosts (www.silrev.biz, assetgame.silrev.biz,
-# assetdelivery.silrev.biz) are baked into RCCService.exe. A local stack therefore
-# reaches its own website through one of those names - a compose network alias - and
-# this variable is that name. It is used for the URLs RCC fetches (thumbnail script
-# arguments), never for the renderer's own calls, which keep using the service URL.
+# failed", and it upgrades accepted URLs to https: the accepted hosts (www.silrev.biz,
+# assetgame.silrev.biz, assetdelivery.silrev.biz) are baked into RCCService.exe. The local
+# stack therefore answers one of those names itself, on https, through the TLS terminator
+# in docker/renderer/asset_tls.py, and this variable is that URL. It is used for the URLs
+# RCC fetches (thumbnail script arguments), never for the renderer's own calls, which keep
+# using the website service URL.
 ASSET_BASE_URL_ENV = 'RENDERER_ASSET_BASE_URL'
 
 
@@ -609,54 +608,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {'success': True, 'message': 'ok', 'data': base64.b64encode(image).decode()})
 
 
-def verify_asset_host(asset_url=None, website_url=None, resolver=None):
-    """Refuses a stack in which RCC's asset host does not resolve to the website.
-
-    RCC fetches thumbnail assets itself, and it only trusts the host names compiled
-    into RCCService.exe, so the local stack publishes the website under one of those
-    names (a compose network alias). If that alias is missing, the name resolves to the
-    real internet host and RCC would render an asset from a foreign server. Comparing
-    the resolved addresses turns that case into a refused start.
-
-    Returns ``(ok, message)``; ``supervise.sh`` runs this before RCC is started.
-    """
-    asset_url = asset_url or os.environ.get(ASSET_BASE_URL_ENV)
-    website_url = website_url or os.environ.get('WEBSITE_BASE_URL', DEFAULT_WEBSITE_URL)
-    if not asset_url:
-        return True, 'no RCC asset host is configured; RCC fetches from the website service'
-    asset_host = urllib.parse.urlsplit(asset_url).hostname
-    website_host = urllib.parse.urlsplit(website_url).hostname
-    if not asset_host or not website_host:
-        return False, f'{asset_url} or {website_url} carries no host name'
-    if asset_host == website_host:
-        return True, f'RCC fetches assets from {asset_host}, the website service itself'
-    resolver = resolver or socket.getaddrinfo
-
-    def addresses(host):
-        try:
-            infos = resolver(host, None, type=socket.SOCK_STREAM)
-        except OSError as error:
-            raise RenderError(f'{host} does not resolve here: {error}') from None
-        return {info[4][0] for info in infos}
-
-    try:
-        asset_addresses = addresses(asset_host)
-        website_addresses = addresses(website_host)
-    except RenderError as error:
-        return False, str(error) + '; RCC must fetch assets from this stack, not from elsewhere'
-    stray = asset_addresses - website_addresses
-    if not asset_addresses or stray:
-        return False, (f'{asset_host} resolves to {sorted(asset_addresses)}, which is not '
-                       f'{website_host} ({sorted(website_addresses)}); RCC must fetch assets '
-                       'from this stack, not from elsewhere')
-    return True, f'{asset_host} resolves to the local website ({sorted(asset_addresses)})'
-
-
 def main():
-    if '--verify-asset-host' in sys.argv[1:]:
-        ok, message = verify_asset_host()
-        print(('asset host accepted: ' if ok else 'asset host refused: ') + message, flush=True)
-        raise SystemExit(0 if ok else 1)
     port = int(os.environ.get('RENDERER_PORT', str(DEFAULT_PORT)))
     service = Renderer()
     Handler.renderer = service

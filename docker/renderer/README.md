@@ -73,40 +73,39 @@ Asset URLs are built from configured values only
 (`<RENDERER_ASSET_BASE_URL>/asset/?id=<assetId>`), never from the request body, so the
 renderer cannot be made to fetch an arbitrary URL.
 
-RCC fetches those URLs itself, and **this build only trusts the host names compiled into
-`RCCService.exe`** (`www.silrev.biz`, `assetgame.silrev.biz`, `assetdelivery.silrev.biz`);
-anything else is answered with `Trust check failed`, which is why the first renders came
-back as the script's own blank placeholder. The renderer therefore hands RCC a trusted
-name and `docker-compose.local.yml` gives the website that name as a **compose network
-alias**:
+RCC fetches those URLs itself, and two properties of this build decide how that can work:
 
-```yaml
-    networks:
-      default:
-        aliases: [www.silrev.biz, assetgame.silrev.biz, assetdelivery.silrev.biz]
+* **it only trusts the host names compiled into `RCCService.exe`** (`www.silrev.biz`,
+  `assetgame.silrev.biz`, `assetdelivery.silrev.biz`). Anything else is answered with
+  `Trust check failed`, which is why the first renders came back as the script's own blank
+  placeholder.
+* **it upgrades those URLs to `https`**: asked for `http://www.silrev.biz/asset/?id=1`, RCC
+  opens a connection to port 443, while a plain http website only listens on 5000 - the
+  render is reported as `HttpError: ConnectFail` before a single byte is exchanged.
+
+The stack therefore answers a trusted name itself, inside the renderer container, over
+TLS (`docker/renderer/asset_tls.py`), and relays the requests to the real website:
+
+```
+RCC --https--> www.silrev.biz:5000 (compose network alias, renderer container)
+    --http-->  website:5000 (the actual website)
 ```
 
-The alias exists only inside this stack, is never published, and does not change what the
-website serves. Before RCC is started, `supervise.sh` runs
-`python3 /app/renderer.py --verify-asset-host`, which resolves the trusted name and the
-`website` service and **refuses to start** unless they are the same address: without the
-alias the name would resolve to the real internet host and RCC would render a foreign
-asset. `RENDERER_ASSET_BASE_URL` is only used for the URLs RCC fetches; the renderer's own
-calls (the appearance document it reads to pick the avatar script) keep using
-`WEBSITE_BASE_URL`.
-
-These endpoints answer `501` with the concrete missing piece, so the thumbnail stays
-pending instead of being faked:
-
-| Route | Why it is not answered yet |
-| --- | --- |
-| `/image/clothing` | RCC's `Shirt.lua`/`Pants.lua` load a mannequin asset; this stack has no local one |
-| `/image/teeshirt` | this build ships no TeeShirt thumbnail script |
-| `/catalog/head` | RCC's `Head.lua` needs the same mannequin asset |
-| `/catalog/bodypart`, `/catalog/package` | RCC's scripts need a rig URL this stack does not serve |
-| `/catalog/animationsilhouette`, `/catalog/animation` | animation assets are not wired in |
-| `/game/thumbnail` | place thumbnails need a real place to load |
-| `/player/thumbnail-3d` | this build exposes no model/mesh renderer for 3D objects |
+* the aliases are **compose network aliases on the renderer service only** - they exist
+  inside this stack, are never published, and the website is not reachable under them;
+* `asset_tls.py` generates a throwaway certificate authority and a server certificate for
+  those names on every container start (tmpfs, `RENDERER_TLS_DIRECTORY`), appends the
+  authority to a bundle of the build's own authorities plus the local one, and hands RCC
+  that bundle through `CURL_CA_BUNDLE`/`SSL_CERT_FILE` (`/home/rcc/tls/cacert.pem`). The
+  mounted `RCCService/` build is never written to; the runtime copy the launcher makes is
+  patched only when it already exists, which is why `supervise.sh` runs `--setup` twice;
+* `asset_tls.py --verify` is the guard `supervise.sh` runs before starting RCC: the
+  trusted name has to **answer with this container's own certificate**, otherwise the
+  renderer refuses to start. A name that resolves to the real internet host therefore
+  stops the stack instead of letting RCC render a foreign asset;
+* `RENDERER_ASSET_BASE_URL` is only used for the URLs RCC fetches. The renderer's own
+  calls (the appearance document it reads to pick the avatar script) keep using
+  `WEBSITE_BASE_URL`, which the same container always reaches.
 
 ## Environment
 
@@ -116,7 +115,14 @@ pending instead of being faked:
 | `RCC_SOAP_URL` | `http://127.0.0.1:64989/` | RCC SOAP endpoint, in this container |
 | `RCC_SOAP_NAMESPACE` | `http://silrev.biz/` | SOAP namespace of this build |
 | `WEBSITE_BASE_URL` | `http://website:5000` | where the renderer's own calls (appearance documents) go |
-| `RENDERER_ASSET_BASE_URL` | `WEBSITE_BASE_URL` | the trusted host name RCC is told to fetch assets from; a compose network alias of the website |
+| `RENDERER_ASSET_BASE_URL` | `WEBSITE_BASE_URL` | the trusted, https URL RCC is told to fetch assets from; answered by this container |
+| `RENDERER_TLS_DIRECTORY` | `/home/rcc/tls` | where the throwaway authority and server certificate live |
+| `RENDERER_TLS_BUNDLE` | `/home/rcc/tls/cacert.pem` | the CA bundle RCC verifies with: the build's authorities plus the local one |
+| `RCC_CA_BUNDLE` | `/home/rcc/runtime/ssl/cacert.pem` | the build's own bundle, patched when the launcher has copied it |
+| `RENDERER_TLS_PORT` | `5000` | the port the terminator listens on (the port in `RENDERER_ASSET_BASE_URL`) |
+| `RENDERER_TLS_UPSTREAM` | `website:5000` | where relayed requests go: the real website |
+| `RENDERER_TLS_HOST` | first trusted name | the name `--verify` checks the certificate against |
+| `CURL_CA_BUNDLE`, `SSL_CERT_FILE` | `/home/rcc/tls/cacert.pem` | how RCC is told which bundle to trust |
 | `RENDERER_AUTHORIZATION` | unset | the accepted `Authorization` value; set from `docker/local/compose.env` by `--enable-renderer` and used in preference to the mounted config |
 | `RENDERER_WEBSITE_CONFIG` | `/config/website.json` | mounted website config to read `Render:Authorization` from |
 | `RENDERER_JOB_TIMEOUT` | `120` | seconds a single RCC job may run |
@@ -148,10 +154,12 @@ pending instead of being faked:
   extracts those literals from the build's own scripts (`RCC_SCRIPTS_DIRECTORY`) and
   answers 502 naming the script, so the thumbnail stays pending instead of white.
 * `scripts/probe_rcc_image.py` asks RCC itself what the shipped script's calls do: one
-  job clicks the same asset through the compose service name, through the trusted name
-  over http and https and through `rbxassetid://`, plus the website's static
-  `/img/Audio.png` through both names, and reports byte counts (`Image.lua`'s own
-  placeholder is named as such). It writes a unique diagnostic
+  job clicks the same asset through the compose service name, through the trusted name as
+  configured, with `http` instead of `https`, without the port, and through
+  `rbxassetid://`, plus the website's static `/img/Audio.png` through the terminator, and
+  reports byte counts (`Image.lua`'s own placeholder is named as such). RCC's own log
+  shows where each attempt connected (`Curl Open: <address>|<port>`), which is what named
+  the scheme problem. It writes a unique diagnostic
   script under `internalscripts/scripts/` - never next to the shipped thumbnail scripts -
   sends it as the JSON `ExecuteScript` job this build accepts (a raw Lua chunk is refused
   with "Attempted to execute with invalid JSON"), removes it again and stores nothing. The
