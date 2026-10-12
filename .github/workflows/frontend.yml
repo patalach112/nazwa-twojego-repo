@@ -1,0 +1,48 @@
+name: Frontend browser
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - frontend/**
+      - .github/workflows/frontend.yml
+  push:
+    branches: [master]
+    paths:
+      - frontend/**
+      - .github/workflows/frontend.yml
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [development, production]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Install Chromium for real rendering and interactions
+        working-directory: frontend
+        run: npx playwright-core install --with-deps chromium
+      - name: Check desktop and mobile rendering with explicit visual fixtures
+        working-directory: frontend
+        env:
+          BROWSER_MODE: ${{ matrix.mode }}
+        run: npm run test:browser
+      - name: Retain screenshots and the browser report, including failed runs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-${{ matrix.mode }}-visual-review
+          path: frontend/.visual-results/${{ matrix.mode }}
+          if-no-files-found: warn

@@ -152,6 +152,21 @@ validation while the Razor antiforgery token remains. It does not start the
 frontend, validator or RCC, or prove that a real client can join. Original signing keys remain compromised despite the portable
 loader fix.
 
+# FRONTEND VISUAL CHECKS
+
+The browser review now covers the anonymous entry page, Games, Catalog and a
+sample member dashboard at 1440, 390 and 320 pixels, in both development and
+production. It reproduced and fixed a white development page, the empty public
+root, obsolete login navigation, clipped mobile controls, page-wide carousel
+overflow, broken thumbnail placeholders and image probes, missing fonts, and
+an incorrectly cross-origin dashboard feed. The existing design is preserved.
+
+Run `npm run test:browser` in `frontend/`; the [visual testing guide](frontend/docs/visual-testing.md)
+explains Chromium installation, isolated fixtures, screenshots and the limits
+of these checks. A real browser rendering sample data is **not** a full-backend
+login test, an avatar render or a game join. The Razor login's visual layout and
+successful authentication still need their own end-to-end check.
+
 # HTTP ACCESS WITHOUT THE LEGACY GATES
 
 The old `ApplicationGuardMiddleware` and global `CsrfMiddleware` have been
@@ -190,7 +205,7 @@ replacement CSRF/origin protection strategy. CORS alone is not a replacement.
 
 ## requirements
 
-- The web stack targets Linux, macOS and Windows. The bundled RCC runtime still requires Windows; see **WHAT IS STILL MISSING** above.
+- The web stack targets Linux, macOS and Windows. The bundled RCC files are Windows executables; Wine-in-Docker startup and legacy Lua smoke checks are documented [here](docker/rcc-wine/README.md). They are not verified game joins.
 - Local web development uses `localhost`; a domain and patched clients are separate deployment work.
 - knowledge on how things like this work (you should have at least some experience with websites and coding to be able to host this. it's really not hard to set up if you know what you're doing.)
 

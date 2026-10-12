@@ -38,3 +38,5 @@ yarn-error.log*
 .vercel
 
 certificates
+# Opt-in browser review output
+/.visual-results/

@@ -83,3 +83,6 @@ game-renderer/eslint.config.js.old
 
 # bytecode from the setup tests
 __pycache__/
+
+# Local investigation scratch files
+/.cache/
