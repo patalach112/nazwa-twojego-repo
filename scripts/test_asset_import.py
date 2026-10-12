@@ -64,12 +64,18 @@ def trace(step):
     print(f"Asset import: {time.strftime('%H:%M:%S')} {step}", flush=True)
 
 
+# Negative checks (scripts/test_renderer_contract.py proves this path on purpose) raise
+# the same failure; they set this to False so that a green run carries no failure
+# annotation that reads like something actually broke.
+annotate_failures = True
+
+
 def fail(message):
     text = scrub("Asset import test failed: " + message)
     print(text, file=sys.stderr, flush=True)
     # Raw step logs are not always retrievable, so publish the reason as a
     # workflow annotation and in the job summary instead of only in the log.
-    if os.environ.get("GITHUB_ACTIONS") == "true":
+    if annotate_failures and os.environ.get("GITHUB_ACTIONS") == "true":
         escaped = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::error title=Asset import check::{escaped}")
         summary = os.environ.get("GITHUB_STEP_SUMMARY")

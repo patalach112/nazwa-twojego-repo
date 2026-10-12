@@ -839,8 +839,12 @@ class RendererRestartToleranceTest(unittest.TestCase):
 
     def test_an_unreachable_renderer_fails_with_a_clear_message(self):
         self.module.RENDERER_URL = 'http://127.0.0.1:1'
-        with self.assertRaises(SystemExit) as caught:
-            self.module.renderer_post('/image/image', {'assetId': 1}, attempts=2, pause=0)
+        # This check runs the failure path on purpose, so its workflow annotation is
+        # suppressed: a green run must not carry an annotation that reads like a break.
+        import test_asset_import
+        with mock.patch.object(test_asset_import, 'annotate_failures', False):
+            with self.assertRaises(SystemExit) as caught:
+                self.module.renderer_post('/image/image', {'assetId': 1}, attempts=2, pause=0)
         self.assertIn('did not answer POST /image/image', str(caught.exception))
 
 
