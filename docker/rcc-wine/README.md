@@ -22,6 +22,8 @@ docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/b
 docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/lua_probe.py
 # For the selected 2020 container only: one controlled JSON ExecuteScript job.
 docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/json_probe.py
+# And one real thumbnail render of two different DataModels:
+docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/thumbnail_probe.py
 # Stop RCC, Wine and Xvfb together:
 docker compose -f docker-compose.rcc-wine.yml down
 ```
@@ -68,12 +70,12 @@ workflow fails when required checks fail; 2018 JSON dispatch remains untested.
 
 The actual container experiment on 2026-10-12 established:
 
-| Bundled build | SOAP response | Execution job / CloseJob | Game join |
-| --- | --- | --- | --- |
-| 2016 | passed (`GetVersion` returns `?` in this modified binary) | passed | not tested |
-| 2017 | passed (`0.314.0.159344`) | passed | not tested |
-| 2018 | passed | not applicable: requires JSON dispatch | not tested |
-| 2020 | passed (`0.450.0.411923`) with `Settings.json` | JSON ExecuteScript passed | not tested |
+| Bundled build | SOAP response | Execution job / CloseJob | Thumbnail render | Game join |
+| --- | --- | --- | --- | --- |
+| 2016 | passed (`GetVersion` returns `?` in this modified binary) | passed | not applicable | not tested |
+| 2017 | passed (`0.314.0.159344`) | passed | not applicable | not tested |
+| 2018 | passed | not applicable: requires JSON dispatch | not applicable | not tested |
+| 2020 | passed (`0.450.0.411923`) with `Settings.json` | JSON ExecuteScript passed | see the workflow run for this revision | not tested |
 
 The 2018 and 2020 servers explicitly rejected raw Lua as invalid JSON. This is
 a different job contract, not evidence that Wine failed to load the executable.
@@ -84,6 +86,12 @@ This proves JSON dispatch into Lua, not `GameServer` mode or thumbnail rendering
 `game-renderer/` show other request shapes but do not turn this smoke test into
 a complete launcher. `scripts/test_rcc_json_probe.py` checks probe contract and
 cleanup with a substitute RPC only; it is not the actual Wine execution proof.
+
+The thumbnail probe renders local parts, not a user avatar and not an uploaded
+asset: it proves that this RCC build produces real images for a DataModel, not
+that avatar, clothing or place thumbnails match the website contract yet. The
+website still needs a renderer service in front of RCC (`Render:BaseUrl`), which
+is the next, separate step.
 
 These checks do **not** load a real place, render an avatar, create the game UDP
 listener, start the client proxy, send `/gs/*` callbacks or join from a client.

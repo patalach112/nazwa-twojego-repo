@@ -27,7 +27,7 @@ def annotation(level, title, message):
 def run_build(year, folder, image):
     name = 'rcc-wine-test-' + uuid.uuid4().hex[:12]
     namespace = 'http://silrev.biz/' if year == '2020' else 'http://projex.zip/'
-    result = {'year': year, 'namespace': namespace, 'soap': False, 'lua': None if year in ('2018', '2020') else False, 'jsonJob': False if year == '2020' else None, 'stopped': False}
+    result = {'year': year, 'namespace': namespace, 'soap': False, 'lua': None if year in ('2018', '2020') else False, 'jsonJob': False if year == '2020' else None, 'thumbnail': None, 'stopped': False}
     try:
         launched = command(
             'docker', 'run', '--detach', '--name', name, '--network', 'none',
@@ -67,6 +67,16 @@ def run_build(year, folder, image):
                 raise RuntimeError('SOAP works, but the JSON job did not: ' + execution.stderr.strip())
             result['jsonJob'] = True
             result['jobContract'] = 'JSON ExecuteScript with a controlled local Lua script'
+            # The render probe is what separates a working JSON dispatch from a
+            # working renderer: it must return two different decodable images.
+            thumbnail = command('docker', 'exec', name, 'python3', '/usr/local/bin/thumbnail_probe.py',
+                                timeout=int(os.environ.get('RCC_WINE_THUMBNAIL_TIMEOUT', '220')))
+            if thumbnail.returncode:
+                detail = (thumbnail.stderr.strip() or thumbnail.stdout.strip())[-700:]
+                raise RuntimeError('JSON execution works, but no thumbnail render was established: ' + detail)
+            result['thumbnail'] = json.loads(thumbnail.stdout.strip().splitlines()[-1])
+            annotation('notice', 'RCC Wine 2020 thumbnail',
+                       'two different DataModels rendered as {width}x{height} {format} through {mode}. No place or client join was tested.'.format(**result['thumbnail']))
         else:
             result['jobContract'] = 'JSON dispatch; execution not tested'
         before = time.monotonic()
@@ -78,6 +88,8 @@ def run_build(year, folder, image):
             raise RuntimeError('The container needed a forceful kill or did not stop: ' + state.stdout.strip())
         scope = ('Lua OpenJobEx/CloseJob passed' if result['lua'] else
                  'JSON ExecuteScript/CloseJob passed' if result['jsonJob'] else 'JSON job execution NOT tested')
+        if result['thumbnail']:
+            scope += ', thumbnail render passed'
         annotation('notice', f'RCC Wine {year}', f"SOAP {result['version']}, {scope}, signal shutdown passed. No place or client join was tested.")
     except Exception as error:
         result['error'] = str(error)
@@ -101,11 +113,17 @@ def main():
     print(json.dumps(results, indent=2))
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-            summary.write('## Actual Windows RCC under Wine\n\n| Build | SOAP | Execution job | Shutdown |\n| --- | --- | --- | --- |\n')
+            summary.write('## Actual Windows RCC under Wine\n\n| Build | SOAP | Execution job | Thumbnail render | Shutdown |\n| --- | --- | --- | --- | --- |\n')
             for result in results:
-                summary.write('| ' + result['year'] + ' | ' + ' | '.join('not tested (JSON jobs)' if value is None else 'passed' if value else 'not verified' for value in (result['soap'], result['jsonJob'] if result['year'] == '2020' else result['lua'], result['stopped'])) + ' |\n')
+                thumbnail = ('passed' if result['thumbnail'] else 'not verified') if result['year'] == '2020' else 'not applicable'
+                cell = lambda value: 'not tested' if value is None else 'passed' if value else 'not verified'
+                cells = (cell(result['soap']), cell(result['jsonJob'] if result['year'] == '2020' else result['lua']),
+                         thumbnail, cell(result['stopped']))
+                summary.write('| ' + result['year'] + ' | ' + ' | '.join(cells) + ' |\n')
             summary.write('\nThese scoped smoke checks are not a real place launch or a client join. Failed builds remain unsupported.\n')
-    return 0 if all(r['soap'] and r['lua'] is not False and r['jsonJob'] is not False and r['stopped'] for r in results) else 1
+    required = (lambda r: bool(r['soap']) and r['lua'] is not False and r['jsonJob'] is not False and bool(r['stopped'])
+                and (bool(r['thumbnail']) if r['year'] == '2020' else True))
+    return 0 if all(required(r) for r in results) else 1
 
 
 if __name__ == '__main__':
