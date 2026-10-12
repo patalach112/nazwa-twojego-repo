@@ -24,13 +24,16 @@ docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/b
 docker compose -f docker-compose.rcc-wine.yml down
 ```
 
-The default is the 2016 executable in `RCCService/`. Select a different build by
+The default is the 2016 executable in `RCCService/`, whose SOAP namespace is
+`http://projex.zip/` (also used by the 2017 and 2018 builds). The 2020 build uses
+`http://silrev.biz/` and needs its `Settings.json` startup argument; the entrypoint
+uses that file when it is present. Select a different build by
 mounting its **whole directory**, including its own content, shaders and DLLs:
 
 ```bash
 RCC_DIRECTORY=./RCCService/RCCService2017 docker compose -f docker-compose.rcc-wine.yml up --build
 RCC_DIRECTORY=./RCCService/RCCService2018 docker compose -f docker-compose.rcc-wine.yml up --build
-RCC_DIRECTORY=./RCCService/RCCService2020 docker compose -f docker-compose.rcc-wine.yml up --build
+RCC_DIRECTORY=./RCCService/RCCService2020 RCC_SOAP_NAMESPACE=http://silrev.biz/ docker compose -f docker-compose.rcc-wine.yml up --build
 ```
 
 Stop the previous container before changing builds. The Wine prefix is ephemeral

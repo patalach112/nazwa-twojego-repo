@@ -56,7 +56,12 @@ if base_url:
 PY
 
 if [ "$#" -eq 0 ]; then
-    set -- -Console -Port "$RCC_PORT"
+    if [ -f Settings.json ]; then
+        # The bundled 2020 launch scripts require their application settings file.
+        set -- -Console -verbose -settingsfile Settings.json -port "$RCC_PORT"
+    else
+        set -- -Console -Port "$RCC_PORT"
+    fi
 fi
 exec xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24 -nolisten tcp' \
     /usr/local/bin/run-wine.sh "$RCC_EXE" "$@"

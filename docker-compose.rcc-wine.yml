@@ -8,6 +8,7 @@ services:
       RCC_BASE_URL: ${RCC_BASE_URL:-http://host.docker.internal:5000}
       RCC_PORT: "64989"
       RCC_EXE: ${RCC_EXE:-RCCService.exe}
+      RCC_SOAP_NAMESPACE: ${RCC_SOAP_NAMESPACE:-http://projex.zip/}
     volumes:
       - ${RCC_DIRECTORY:-./RCCService}:/opt/rcc:ro
     ports:

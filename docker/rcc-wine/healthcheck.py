@@ -3,12 +3,13 @@
 import os
 import sys
 import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 
 SOAP = 'http://schemas.xmlsoap.org/soap/envelope/'
 
 
-def get_version(port, namespace='http://silrev.biz/'):
+def get_version(port, namespace='http://projex.zip/'):
     envelope = ET.Element(f'{{{SOAP}}}Envelope')
     body = ET.SubElement(envelope, f'{{{SOAP}}}Body')
     ET.SubElement(body, f'{{{namespace}}}GetVersion')
@@ -19,10 +20,17 @@ def get_version(port, namespace='http://silrev.biz/'):
         method='POST',
     )
     # Ignore proxy variables: SOAP belongs to this container, not an HTTP proxy.
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=3) as response:
-        root = ET.fromstring(response.read())
-    if root.find(f'.//{{{SOAP}}}Fault') is not None:
-        raise RuntimeError('RCC returned a SOAP fault')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        response = opener.open(request, timeout=3)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        raw = response.read()
+        root = ET.fromstring(raw)
+    fault = root.find(f'.//{{{SOAP}}}Fault')
+    if fault is not None:
+        raise RuntimeError('RCC SOAP fault: ' + ' '.join(fault.itertext()))
     result = next((e for e in root.iter() if e.tag.rsplit('}', 1)[-1] == 'GetVersionResult'), None)
     if result is None or not result.text or not result.text.strip():
         raise RuntimeError('RCC did not return a nonempty GetVersionResult')
@@ -31,7 +39,7 @@ def get_version(port, namespace='http://silrev.biz/'):
 
 if __name__ == '__main__':
     try:
-        print(get_version(int(os.environ.get('RCC_PORT', '64989')), os.environ.get('RCC_SOAP_NAMESPACE', 'http://silrev.biz/')))
+        print(get_version(int(os.environ.get('RCC_PORT', '64989')), os.environ.get('RCC_SOAP_NAMESPACE', 'http://projex.zip/')))
     except Exception as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

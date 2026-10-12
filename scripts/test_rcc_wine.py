@@ -26,7 +26,8 @@ def annotation(level, title, message):
 
 def run_build(year, folder, image):
     name = 'rcc-wine-test-' + uuid.uuid4().hex[:12]
-    result = {'year': year, 'soap': False, 'lua': False, 'stopped': False}
+    namespace = 'http://silrev.biz/' if year == '2020' else 'http://projex.zip/'
+    result = {'year': year, 'namespace': namespace, 'soap': False, 'lua': False, 'stopped': False}
     try:
         launched = command(
             'docker', 'run', '--detach', '--name', name, '--network', 'none',
@@ -35,7 +36,8 @@ def run_build(year, folder, image):
             '--tmpfs', '/home/rcc:rw,nosuid,nodev,uid=1000,gid=1000,size=2g',
             '--tmpfs', '/tmp:rw,nosuid,nodev,size=256m',
             '--mount', f'type=bind,src={ROOT / folder},dst=/opt/rcc,readonly',
-            '--env', 'RCC_BASE_URL=http://127.0.0.1:5000', image,
+            '--env', 'RCC_BASE_URL=http://127.0.0.1:5000',
+            '--env', 'RCC_SOAP_NAMESPACE=' + namespace, image,
             timeout=30,
         )
         if launched.returncode:

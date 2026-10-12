@@ -6,7 +6,7 @@ import uuid
 import xml.etree.ElementTree as ET
 
 SOAP = 'http://schemas.xmlsoap.org/soap/envelope/'
-NAMESPACE = os.environ.get('RCC_SOAP_NAMESPACE', 'http://silrev.biz/')
+NAMESPACE = os.environ.get('RCC_SOAP_NAMESPACE', 'http://projex.zip/')
 
 
 def call(method, children):
