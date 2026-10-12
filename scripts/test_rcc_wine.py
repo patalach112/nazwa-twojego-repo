@@ -76,7 +76,8 @@ def run_build(year, folder, image):
                 raise RuntimeError('JSON execution works, but no thumbnail render was established: ' + detail)
             result['thumbnail'] = json.loads(thumbnail.stdout.strip().splitlines()[-1])
             annotation('notice', 'RCC Wine 2020 thumbnail',
-                       'two different DataModels rendered as {width}x{height} {format} through {mode}. No place or client join was tested.'.format(**result['thumbnail']))
+                       'two different DataModels rendered as {width}x{height} {format} through {mode} with the script in '
+                       '{scriptDirectory} ({sceneBytes} and {emptyBytes} bytes, not identical). No place or client join was tested.'.format(**result['thumbnail']))
         else:
             result['jobContract'] = 'JSON dispatch; execution not tested'
         before = time.monotonic()

@@ -75,13 +75,17 @@ The actual container experiment on 2026-10-12 established:
 | 2016 | passed (`GetVersion` returns `?` in this modified binary) | passed | not applicable | not tested |
 | 2017 | passed (`0.314.0.159344`) | passed | not applicable | not tested |
 | 2018 | passed | not applicable: requires JSON dispatch | not applicable | not tested |
-| 2020 | passed (`0.450.0.411923`) with `Settings.json` | JSON ExecuteScript passed | see the workflow run for this revision | not tested |
+| 2020 | passed (`0.450.0.411923`) with `Settings.json` | JSON ExecuteScript passed | passed: two different DataModels rendered as 420x420 PNG through the JSON `Thumbnail` mode | not tested |
 
 The 2018 and 2020 servers explicitly rejected raw Lua as invalid JSON. This is
 a different job contract, not evidence that Wine failed to load the executable.
 The 2020 controlled JSON execution was verified in the real Wine workflow:
 https://github.com/patalach112/nazwa-twojego-repo/actions/runs/38232114384
 This proves JSON dispatch into Lua, not `GameServer` mode or thumbnail rendering.
+The 2020 thumbnail render was verified on 2026-10-12 in
+https://github.com/patalach112/nazwa-twojego-repo/actions/runs/38268672127
+(`RCC Wine 2020 thumbnail: two different DataModels rendered as 420x420 PNG through Thumbnail`),
+so this build does produce real images for a DataModel without a place file.
 2018 JSON execution remains unverified. The corresponding scripts in
 `game-renderer/` show other request shapes but do not turn this smoke test into
 a complete launcher. `scripts/test_rcc_json_probe.py` checks probe contract and

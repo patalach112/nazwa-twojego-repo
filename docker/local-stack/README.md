@@ -145,8 +145,11 @@ and that the panel is served and gated, not that rendering works.
 
 There is no operational RCC launcher/proxy or verified real game join. The
 experimental RCC Wine compose file is separate. A controlled 2020 JSON
-`ExecuteScript` job passed under Wine; `GameServer` mode and client joins remain
-untested. Disabled rendering produces pending thumbnails, not rendered avatars.
+`ExecuteScript` job and one real 420x420 PNG thumbnail render of two different
+DataModels passed under Wine (`RCC Wine smoke`); `GameServer` mode, avatar
+renders and client joins remain untested. The website still has no renderer
+service in front of RCC, so disabled rendering keeps producing pending
+thumbnails rather than a rendered avatar.
 Chat, trade/economy workflows, uploads/Go validation, account recovery and 2FA
 end-to-end behavior are not established by the basic account test.
 
