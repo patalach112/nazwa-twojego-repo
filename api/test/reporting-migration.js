@@ -22,6 +22,21 @@ const server = jobId => ({ id: jobId, asset_id: 1, ip: '127.0.0.1', port: jobId 
     assert.equal(Number((await knex('asset_server').count('* as count').first()).count), 0, 'Use an empty test database');
     const tables = await knex('information_schema.tables').where({ table_schema: 'public', table_type: 'BASE TABLE' }).whereNotIn('table_name', ['knex_migrations', 'knex_migrations_lock']).count('* as count').first();
     console.log(`All ${migrationCount} migrations passed; ${tables.count} application tables.`);
+    const connectionsName = '20261012000000_addUserConnections.js';
+    const connectionsMigration = require('../migrations/' + connectionsName);
+    const [connectionUser] = await knex('user').insert({username: 'ConnectionsMigration', password: 'test-only'}).returning('id');
+    const connectionUserId = connectionUser.id || connectionUser;
+    await knex('user_connections').insert({user_id: connectionUserId, github: 'example'});
+    await assert.rejects(knex('user_connections').insert({user_id: connectionUserId}), /unique/);
+    await assert.rejects(connectionsMigration.down(knex), /Refusing to drop populated/);
+    assert.equal((await knex('user_connections').where({user_id: connectionUserId}).first()).github, 'example');
+    await connectionsMigration.up(knex); // Adopting an existing complete table preserves its rows.
+    await knex('user').where({id: connectionUserId}).del();
+    assert.equal(Number((await knex('user_connections').count('* as count').first()).count), 0);
+    await knex.migrate.down({name: connectionsName});
+    assert.equal(await knex.schema.hasTable('user_connections'), false);
+    await knex.migrate.latest();
+    console.log('User connections migration supports account creation, uniqueness, cascades and safe rollback.');
     const [transactionId] = await knex('user_transaction').insert({ type: 101, currency_type: 2, amount: 10, user_id_one: null, user_id_two: null, group_id_one: 1, group_id_two: 2 }).returning('id');
     await knex('user_transaction').where({ id: transactionId.id || transactionId }).del();
     const columns = await knex('information_schema.columns').where({ table_schema: 'public', table_name: 'asset_server' }).select('column_name');
