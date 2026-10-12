@@ -43,21 +43,26 @@ jobs:
           import json, os, pathlib
           temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
           build_log = temporary / 'local-build.log'
-          text = (build_log.read_text() if build_log.exists() else '') + '\n' + (temporary / 'local-website.log').read_text()
+          logs = [('Local website runtime diagnostics', (temporary / 'local-website.log').read_text()),
+                  ('Local website build diagnostics', build_log.read_text() if build_log.exists() else '')]
           config = json.loads(pathlib.Path('docker/local/website.json').read_text())
-          def redact(value):
-              global text
+          secrets = []
+          def collect(value):
               if isinstance(value, dict):
                   for key, child in value.items():
                       if isinstance(child, str) and child and any(word in key.lower() for word in ('secret','authorization','sessions','games','postgres')):
-                          text = text.replace(child, '[redacted]')
-                      elif isinstance(child, dict): redact(child)
-          redact(config)
+                          secrets.append(child)
+                      elif isinstance(child, dict): collect(child)
+          collect(config)
           migrations = json.loads(pathlib.Path('docker/local/migrations.json').read_text())
-          text = text.replace(migrations['knex']['connection']['password'], '[redacted]')
-          diagnostics = '\n'.join(text.splitlines()[-120:])
-          print(diagnostics)
-          print('::error title=Local website diagnostics::' + diagnostics.replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
+          secrets.append(migrations['knex']['connection']['password'])
+          for title, text in logs:
+              for value in sorted(secrets, key=len, reverse=True): text = text.replace(value, '[redacted]')
+              # Check annotations truncate near 4 KiB: keep the actual failure tail.
+              diagnostics = '\n'.join(text.splitlines()[-45:])[-3500:]
+              if diagnostics:
+                  print(diagnostics)
+                  print('::error title=' + title + '::' + diagnostics.replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
           PY
       - name: Retain actual website screenshots and browser report
         if: always()
