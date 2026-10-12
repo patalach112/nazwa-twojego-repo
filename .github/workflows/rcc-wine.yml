@@ -1,4 +1,4 @@
-name: RCC Wine compatibility experiment
+name: RCC Wine smoke
 
 on:
   pull_request:
@@ -32,10 +32,9 @@ jobs:
           python3 -m py_compile docker/rcc-wine/healthcheck.py docker/rcc-wine/lua_probe.py scripts/test_rcc_wine.py
       - name: Build the 32-bit Wine runtime, not a pretend Linux RCC image
         run: docker build --tag rcc-wine-test docker/rcc-wine
-      - name: Test the actual Windows binaries, SOAP, Lua and shutdown
-        # Optional investigation: a green workflow is not a compatibility claim.
-        # Per-build failures are reported explicitly in annotations and the summary.
-        continue-on-error: true
+      - name: Test actual RCC SOAP, legacy Lua jobs and shutdown
+        # 2018/2020 use JSON jobs: their report explicitly leaves execution untested.
+        # All four must answer SOAP and shut down; 2016/2017 must execute Lua.
         env:
           RCC_WINE_RESULTS: ${{ runner.temp }}/rcc-wine-results.json
         run: python3 scripts/test_rcc_wine.py

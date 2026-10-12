@@ -18,7 +18,7 @@ docker compose -f docker-compose.rcc-wine.yml up --build
 # In another terminal: inspect the real SOAP health result, not just "running".
 docker compose -f docker-compose.rcc-wine.yml ps
 docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/healthcheck.py
-# A separate Lua smoke job, without loading any place or connecting a client:
+# A separate Lua smoke job for 2016/2017 only, without loading a place:
 docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/lua_probe.py
 # Stop RCC, Wine and Xvfb together:
 docker compose -f docker-compose.rcc-wine.yml down
@@ -54,12 +54,27 @@ published on host loopback only and must not be exposed to the internet.
 ## What the test can and cannot establish
 
 `scripts/test_rcc_wine.py` runs all four real executables, one at a time, with
-`--network none`. It waits for a nonempty SOAP `GetVersionResult`, opens a tiny
-Lua job returning a known string, closes that job, and checks signal shutdown.
-Each build has a bounded startup deadline and logs are retained on failure.
-The GitHub workflow is an **optional compatibility experiment**; its green
-conclusion alone is not proof of RCC compatibility. Read its per-build report
-and annotations. A failed build remains unsupported.
+`--network none`. Every build must return a nonempty SOAP `GetVersionResult`
+and stop on a shutdown signal. The 2016 and 2017 builds must also execute a tiny
+Lua job returning a known string and close that job. Startup is bounded and
+logs are retained on failure. The workflow fails when those checks fail; its
+per-build report still distinguishes the untested modern JSON job contract
+from the legacy Lua checks.
+
+The actual container experiment on 2026-10-12 established:
+
+| Bundled build | SOAP response | Raw Lua OpenJobEx / CloseJob | Game join |
+| --- | --- | --- | --- |
+| 2016 | passed (`GetVersion` returns `?` in this modified binary) | passed | not tested |
+| 2017 | passed (`0.314.0.159344`) | passed | not tested |
+| 2018 | passed | not applicable: requires JSON dispatch | not tested |
+| 2020 | passed with `Settings.json` | not applicable: requires JSON dispatch | not tested |
+
+The 2018 and 2020 servers explicitly rejected raw Lua as invalid JSON. This is
+a different job contract, not evidence that Wine failed to load the executable.
+Their JSON job execution/rendering remains unverified. The corresponding
+scripts in `game-renderer/` show the legacy JSON request shapes but do not turn
+this smoke test into a complete launcher.
 
 These checks do **not** load a real place, render an avatar, create the game UDP
 listener, start the client proxy, send `/gs/*` callbacks or join from a client.

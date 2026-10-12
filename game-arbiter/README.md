@@ -35,7 +35,10 @@ substitution; the website cannot choose an executable or supply a shell command.
 The example points at the **Windows-only** `RCCService/RCCService.exe`. On Debian
 it must be replaced with a compatible RCC launcher. The Dockerfile in
 `game-server/docker` expects a `rcc-docker/` directory containing Linux binaries;
-those binaries are not in this repo.
+those binaries are not in this repo. A separate
+[Wine runtime](../docker/rcc-wine/README.md) now checks the bundled Windows builds
+on Linux. Its SOAP and small legacy Lua smoke checks are not a complete game
+launcher.
 
 This arbiter supervises the configured process. A successful start means the
 process was spawned, **not** that a place is ready to join. The launcher must
@@ -60,7 +63,10 @@ shared secret. POST requests require `Content-Type: application/json`.
   Sends a SOAP `Execute` request to that job's local RCC port to kick the player.
   Unknown jobs return 404; connection failures and SOAP faults return 502, not
   fake success. `soapNamespace` matches the legacy game-server's namespace and
-  may need adjustment for a different RCC build.
+  must match the executable, not the website URL: the bundled 2016/2017/2018
+  builds use `http://projex.zip/`, while 2020 uses `http://silrev.biz/`.
+  The newer builds require JSON job dispatch; raw Lua job execution is
+  smoke-tested only on 2016 and 2017; actual eviction remains unverified.
 - `GET /servers`: returns `{ "servers": [...] }` with launch metadata, never the
   authorization secret. The list is held in memory and cleared when a process
   exits. The arbiter shuts down tracked children on SIGINT/SIGTERM.

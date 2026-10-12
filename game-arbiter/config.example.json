@@ -4,7 +4,7 @@
   "authorization": "change-me",
   "rccCwd": "../RCCService",
   "rccCommand": ["{rccCwd}/RCCService.exe", "-Console", "-Port", "{rccPort}"],
-  "soapNamespace": "http://silrev.biz/",
+  "soapNamespace": "http://projex.zip/",
   "soapTimeoutMs": 10000,
   "stopTimeoutMs": 5000
 }

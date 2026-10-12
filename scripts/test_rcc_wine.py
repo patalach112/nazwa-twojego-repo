@@ -27,7 +27,7 @@ def annotation(level, title, message):
 def run_build(year, folder, image):
     name = 'rcc-wine-test-' + uuid.uuid4().hex[:12]
     namespace = 'http://silrev.biz/' if year == '2020' else 'http://projex.zip/'
-    result = {'year': year, 'namespace': namespace, 'soap': False, 'lua': False, 'stopped': False}
+    result = {'year': year, 'namespace': namespace, 'soap': False, 'lua': None if year in ('2018', '2020') else False, 'stopped': False}
     try:
         launched = command(
             'docker', 'run', '--detach', '--name', name, '--network', 'none',
@@ -56,10 +56,15 @@ def run_build(year, folder, image):
             time.sleep(1)
         if not result['soap']:
             raise RuntimeError('No valid SOAP GetVersion reply within 150 seconds: ' + last_error)
-        lua = command('docker', 'exec', name, 'python3', '/usr/local/bin/lua_probe.py', timeout=70)
-        if lua.returncode:
-            raise RuntimeError('SOAP works, but Lua did not: ' + lua.stderr.strip())
-        result['lua'] = True
+        if year in ('2016', '2017'):
+            lua = command('docker', 'exec', name, 'python3', '/usr/local/bin/lua_probe.py', timeout=70)
+            if lua.returncode:
+                raise RuntimeError('SOAP works, but Lua did not: ' + lua.stderr.strip())
+            result['lua'] = True
+        else:
+            # These real RCC builds rejected raw Lua as invalid JSON. Do not
+            # mistake a wrong job contract for a Wine failure or fake a Lua pass.
+            result['jobContract'] = 'JSON dispatch; execution not tested'
         before = time.monotonic()
         stopped = command('docker', 'stop', '--time', '15', name, timeout=25)
         result['stopSeconds'] = round(time.monotonic() - before, 2)
@@ -67,7 +72,8 @@ def run_build(year, folder, image):
         result['stopped'] = stopped.returncode == 0 and state.stdout.startswith('false ') and not state.stdout.strip().endswith(' 137')
         if not result['stopped']:
             raise RuntimeError('The container needed a forceful kill or did not stop: ' + state.stdout.strip())
-        annotation('notice', f'RCC Wine {year}', f"SOAP {result['version']}, Lua OpenJobEx/CloseJob and signal shutdown passed. No place or client join was tested.")
+        scope = 'Lua OpenJobEx/CloseJob passed' if result['lua'] else 'JSON job execution NOT tested'
+        annotation('notice', f'RCC Wine {year}', f"SOAP {result['version']}, {scope}, signal shutdown passed. No place or client join was tested.")
     except Exception as error:
         result['error'] = str(error)
         logs = command('docker', 'logs', '--tail', '45', name)
@@ -92,9 +98,9 @@ def main():
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
             summary.write('## Actual Windows RCC under Wine\n\n| Build | SOAP | Lua job | Shutdown |\n| --- | --- | --- | --- |\n')
             for result in results:
-                summary.write('| ' + result['year'] + ' | ' + ' | '.join('passed' if result[key] else 'not verified' for key in ('soap', 'lua', 'stopped')) + ' |\n')
-            summary.write('\nThis optional compatibility experiment is not a real place launch or a client join. Failed builds remain unsupported.\n')
-    return 0 if all(r['soap'] and r['lua'] and r['stopped'] for r in results) else 1
+                summary.write('| ' + result['year'] + ' | ' + ' | '.join('not tested (JSON jobs)' if result[key] is None else 'passed' if result[key] else 'not verified' for key in ('soap', 'lua', 'stopped')) + ' |\n')
+            summary.write('\nThese scoped smoke checks are not a real place launch or a client join. Failed builds remain unsupported.\n')
+    return 0 if all(r['soap'] and r['lua'] is not False and r['stopped'] for r in results) else 1
 
 
 if __name__ == '__main__':

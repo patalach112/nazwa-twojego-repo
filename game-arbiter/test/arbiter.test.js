@@ -165,7 +165,7 @@ test('eviction targets the registered RCC job and reports SOAP faults and timeou
   assert.match(soapBody, new RegExp(`<jobID>${id}</jobID>`));
   assert.ok(soapBody.includes('player.userId == 12'));
   assert.ok(soapBody.includes('player:Kick()'));
-  assert.ok(soapBody.includes('http://silrev.biz/'));
+  assert.ok(soapBody.includes('http://projex.zip/'));
   assert.equal(soapBody.includes(authorization), false);
   for (const failure of ['fault', 'http-error', 'hang']) {
     mode = failure;

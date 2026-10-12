@@ -147,7 +147,7 @@ function terminate(child, timeoutMs) {
 }
 
 function createArbiter(input, logger = console) {
-  const config = { host: '127.0.0.1', port: 4310, soapNamespace: 'http://silrev.biz/', soapTimeoutMs: 10000, stopTimeoutMs: 5000, ...input };
+  const config = { host: '127.0.0.1', port: 4310, soapNamespace: 'http://projex.zip/', soapTimeoutMs: 10000, stopTimeoutMs: 5000, ...input };
   if (typeof config.authorization !== 'string' || !config.authorization || config.authorization.startsWith('change-me')) {
     throw new Error('Set authorization to the website\'s ArbiterAuthorization, not the example secret');
   }
