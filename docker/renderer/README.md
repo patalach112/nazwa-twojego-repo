@@ -25,11 +25,16 @@ python3 scripts/configure_local_docker.py --enable-renderer
 
 `--enable-renderer` writes `Render:BaseUrl = http://renderer:3521/` and reuses the
 website's existing `RccAuthorization` value as `Render:Authorization`; no secret is
-generated or rotated and no second secret has to be kept in sync. The renderer reads
-that value from the mounted `docker/local/website.json` and re-reads it while it is
-stale, so enabling or changing it needs no restart of the renderer. Without the
-profile (or with `Render:BaseUrl` empty) rendering stays disabled, uploads and asset
-delivery keep working, and thumbnails simply stay `Pending`.
+generated or rotated and no second secret has to be kept in sync. The same value is
+recorded in the generated `docker/local/compose.env`, which the stack passes to compose,
+so the renderer container receives it as `RENDERER_AUTHORIZATION`. That is deliberate: a
+single-file bind mount does not reliably show a config rewritten after the container
+started, and compose recreates a service whose environment changed, so starting or
+recreating the renderer always hands it the enabled value. The mounted config stays as
+the fallback for a manual `docker run`. Enabling therefore means starting (or recreating)
+the `renderer` profile; the test starts it after enabling. Without the profile (or with
+`Render:BaseUrl` empty) rendering stays disabled, uploads and asset delivery keep
+working, and thumbnails simply stay `Pending`.
 
 `scripts/test_local_renderer.py` does exactly this against a disposable `*_tests`
 stack and asserts the rendered pixels, so the flow is checked in CI rather than by
@@ -89,7 +94,7 @@ pending instead of being faked:
 | `RCC_SOAP_URL` | `http://127.0.0.1:64989/` | RCC SOAP endpoint, in this container |
 | `RCC_SOAP_NAMESPACE` | `http://silrev.biz/` | SOAP namespace of this build |
 | `WEBSITE_BASE_URL` | `http://website:5000` | where asset and appearance documents come from |
-| `RENDERER_AUTHORIZATION` | unset | overrides the value read from the mounted config |
+| `RENDERER_AUTHORIZATION` | unset | the accepted `Authorization` value; set from `docker/local/compose.env` by `--enable-renderer` and used in preference to the mounted config |
 | `RENDERER_WEBSITE_CONFIG` | `/config/website.json` | mounted website config to read `Render:Authorization` from |
 | `RENDERER_JOB_TIMEOUT` | `120` | seconds a single RCC job may run |
 | `RENDERER_QUERY_TIMEOUT` | `10` | seconds for a SOAP query such as `GetVersion` |
@@ -106,8 +111,9 @@ pending instead of being faked:
 * The renderer deliberately does not declare `depends_on: website`. It needs neither the
   website nor a healthy database to start, and depending on the website makes
   `restart website` restart the renderer and cut the renders it is doing. The website is
-  the one that needs the renderer configured, and a website restart only makes the
-  renderer re-read `Render:Authorization` from the mounted config.
+  the one that needs the renderer configured, so a website restart never interrupts a
+  render. The renderer takes `RENDERER_AUTHORIZATION` from the environment and only
+  falls back to re-reading `Render:Authorization` from the mounted config.
 * Every job gets an `expirationInSeconds` and a matching client timeout, and `CloseJob`
   runs in a `finally` block, so a stuck render is reported and cleaned up instead of
   hammering RCC.

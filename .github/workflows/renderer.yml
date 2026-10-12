@@ -45,8 +45,12 @@ jobs:
           python3 -m unittest discover -s scripts -p test_local_docker.py
       - name: Generate disposable real database configs
         run: python3 scripts/configure_local_docker.py --database-name marine_renderer_tests --project-name marine-renderer-tests --test
-      - name: Build and start the website together with RCC under Wine and the renderer
-        run: ./scripts/local-stack.sh --profile renderer up --build -d > "$RUNNER_TEMP/renderer-build.log" 2>&1
+      - name: Build the renderer image and start the website
+        # Built here, started by the test: the renderer must come up with the enabled
+        # Authorization value, so nothing starts it before the test enables rendering.
+        run: |
+          ./scripts/local-stack.sh --profile renderer build > "$RUNNER_TEMP/renderer-build.log" 2>&1
+          ./scripts/local-stack.sh up -d >> "$RUNNER_TEMP/renderer-build.log" 2>&1
       - name: Render real thumbnails through the website, the renderer and RCC 2020
         env:
           RENDERER_TEST: '1'

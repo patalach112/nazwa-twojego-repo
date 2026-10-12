@@ -146,12 +146,17 @@ served and gated, not that rendering works.
 Rendering stays off until it is enabled on purpose. `scripts/configure_local_docker.py
 --enable-renderer` writes `Render:BaseUrl = http://renderer:3521/` into
 `docker/local/website.json` and reuses the existing `RccAuthorization` value as
-`Render:Authorization` (no new secret, nothing rotated), then:
+`Render:Authorization` (no new secret, nothing rotated). The same value is written to
+`docker/local/compose.env` as `RENDERER_AUTHORIZATION`, so the renderer container gets
+it from its environment, then:
 
 ```bash
-./scripts/local-stack.sh --profile renderer up -d --build
 ./scripts/local-stack.sh restart website
+./scripts/local-stack.sh --profile renderer up -d --build
 ```
+
+Start the renderer after enabling: the value is read when the container (re)starts, and
+`--enable-renderer` only rewrites files.
 
 The single `renderer` service runs the vendored RCC 2020 build from
 `RCCService/RCCService2020` under Wine *and* the renderer that turns the website's HTTP

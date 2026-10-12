@@ -8,6 +8,8 @@ thumbnail it inspects came from the real code path
 It proves, against the disposable ``*_tests`` stack started with the ``renderer``
 profile:
 
+0. enabling rendering hands the renderer the website's own Authorization value through the
+   environment, without rotating a secret or touching anything else,
 1. the renderer reaches RCC and reports its real version,
 2. an uploaded image asset gets a 420x420 thumbnail whose pixels are the uploaded
    texture, stored in the configured thumbnail directory and served from its URL,
@@ -234,22 +236,27 @@ def png_constants(data):
 
 
 def wait_for_renderer_authorization(authorization, timeout=90):
-    """Waits until the renderer picks the enabled value up from the mounted config.
+    """Waits until the renderer accepts the enabled value.
 
-    The renderer re-reads the website config while its cached value is stale, so
-    enabling rendering must not require restarting the renderer. A request without a
-    valid asset id fails fast, which is enough to tell an accepted secret from a
-    rejected one.
+    The value reaches the renderer through its environment, read from the generated
+    compose environment file, so this asserts that the running container really holds
+    the enabled secret. A request without a valid asset id answers immediately, which is
+    enough to tell an accepted secret from a rejected one.
     """
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
-        status, body = renderer_post("/image/image", {}, authorization=authorization)
+        try:
+            status, body = renderer_post_once("/image/image", {}, authorization=authorization)
+        except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as error:
+            last = (None, {"message": f"the renderer was not reachable: {error}"})
+            time.sleep(3)
+            continue
         if status not in (401, 503):
             return status, body
         last = (status, body)
         time.sleep(3)
-    fail(f"the renderer never accepted the enabled Authorization value within {timeout}s: {last}")
+    fail(f"the renderer rejected or never saw the enabled Authorization value within {timeout}s: {last}")
 
 
 def renderer_post_once(path, payload, authorization=None, timeout=30):
@@ -312,8 +319,8 @@ def main():
     owner = Client(client_ip="198.51.100.13")
 
     try:
-        trace("starting the renderer profile and waiting for the website")
-        run_stack("--profile", "renderer", "up", "-d")
+        trace("starting the website and waiting for it")
+        run_stack("up", "-d")
         wait_ready(backend, frontend)
 
         # The owner is configured explicitly, like an operator would. The renderer
@@ -323,17 +330,21 @@ def main():
         if patched.get("OwnerUserId"):
             fail("the disposable config already lists an owner; refusing to replace it")
         patched["OwnerUserId"] = [owner_id]
-        configure_local_docker.enable_renderer(patched)
+        # The same value, no rotation: the website sends Render:Authorization, and the
+        # generated compose environment file hands it to the renderer container.
+        configure_local_docker.enable_renderer(patched, compose_env_path=DIRECTORY / "compose.env")
         write_config(website_path, patched)
         run_stack("restart", "website")
         wait_ready(backend, frontend)
         authorization = patched["Render"]["Authorization"]
-        notice(f"registered {owner_username} (#{owner_id}) as owner; renderer enabled without rotating a secret")
 
-        # The renderer read the config when it started; enabling must reach it without
-        # a restart, so this waits for the value to be picked up instead of assuming it.
-        wait_for_renderer_authorization(authorization)
-        notice("the renderer accepted the enabled Authorization value without being restarted")
+        # Start the renderer only now, so it starts with the enabled value in its
+        # environment. It needs neither the website nor a healthy database to boot, and
+        # nothing here depends on a container noticing a host file that changed after it
+        # started. Compose recreates the service when this value changes.
+        run_stack("--profile", "renderer", "up", "-d")
+        notice(f"registered {owner_username} (#{owner_id}) as owner; the renderer starts with the "
+               f"enabled Authorization value from the generated environment, without rotating a secret")
 
         # 1. Health is RCC's own answer, not an open TCP port. While RCC is busy with
         #    a render job it cannot answer a version query, so this waits for it.
@@ -360,6 +371,11 @@ def main():
         # The warm-up only pays Wine's first-render cost; whether it succeeded is
         # reported here and the real renders below decide whether rendering works.
         notice(f"the renderer warm-up reports {warmup}")
+
+        # 1b. The enabled value is the one the renderer holds: a caller without it, or
+        #     with a wrong one, is refused further down. This is asserted, not assumed.
+        status, body = wait_for_renderer_authorization(authorization)
+        notice(f"the renderer accepted the enabled Authorization value (HTTP {status} for a probe request)")
 
         # 5. Refusals first: they must not need a working render.
         status, body = renderer_post("/image/image", {"assetId": 1}, authorization=None)

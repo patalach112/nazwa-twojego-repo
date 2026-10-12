@@ -408,11 +408,30 @@ class AuthorizationSource:
     """
 
     def __init__(self, path=None, refresh=10.0):
+        # The generated env file is the primary source: a single-file bind mount does
+        # not necessarily show a config that was rewritten outside the container, and
+        # `scripts/configure_local_docker.py --enable-renderer` writes both.
         self.environment = os.environ.get('RENDERER_AUTHORIZATION')
         self.path = path or os.environ.get('RENDERER_WEBSITE_CONFIG', '/config/website.json')
         self.refresh = refresh
         self.value = None
         self.read_at = 0.0
+        self.last_status = {'source': 'environment' if self.environment else 'config file',
+                            'usable': bool(self.environment)}
+
+    def status(self):
+        """What the source knows, without ever revealing the value itself."""
+        state = dict(self.last_status)
+        state['path'] = self.path
+        try:
+            info = os.stat(self.path)
+            state['exists'] = True
+            state['bytes'] = info.st_size
+            state['isFile'] = bool(info.st_mode & 0o170000 == 0o100000)
+        except OSError as error:
+            state['exists'] = False
+            state['error'] = error.strerror or str(error)
+        return state
 
     def current(self):
         if self.environment:
@@ -421,11 +440,15 @@ class AuthorizationSource:
             return self.value
         try:
             with open(self.path) as stream:
-                configured = (json.load(stream).get('Render') or {}).get('Authorization')
+                document = json.load(stream)
+            configured = (document.get('Render') or {}).get('Authorization')
         except (OSError, ValueError) as error:
+            self.last_status = {'source': 'config file', 'usable': False, 'reason': str(error)}
             log('config_unreadable', path=self.path, detail=str(error))
             return self.value
         self.read_at = time.monotonic()
+        self.last_status = {'source': 'config file', 'usable': bool(configured),
+                            'hasRenderSection': 'Render' in document}
         if configured != self.value:
             log('authorization_reloaded', configured=bool(configured))
             self.value = configured or None
@@ -457,8 +480,11 @@ class Handler(BaseHTTPRequestHandler):
         self.authorization = (self.authorization_source.current()
                               if self.authorization_source is not None else self.authorization)
         if not self.authorization:
+            status = (self.authorization_source.status()
+                      if self.authorization_source is not None else {'source': 'none'})
             self.send_json(503, {'success': False,
-                                 'message': 'the renderer has no Authorization value configured'})
+                                 'message': 'the renderer has no Authorization value configured',
+                                 'authorization': status})
             return False
         provided = self.headers.get('Authorization') or ''
         if not hmac.compare_digest(provided, self.authorization):

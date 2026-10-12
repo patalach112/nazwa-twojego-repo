@@ -37,6 +37,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'RCCService/RCCService2020/internalscripts/thumbnails'
 sys.path.insert(0, str(ROOT / 'docker/renderer'))
 import renderer  # noqa: E402
+sys.path.insert(0, str(ROOT / 'scripts'))
+import configure_local_docker  # noqa: E402
 
 
 def make_png(width, height, left=(255, 0, 0), right=(0, 0, 255)):
@@ -408,12 +410,19 @@ class RccHealthTest(unittest.TestCase):
 
 
 class AuthorizationSourceTest(unittest.TestCase):
-    """Enabling the renderer must not require restarting it."""
+    """The secret the renderer accepts comes from its environment or the mounted config."""
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / 'website.json'
+        self.saved = os.environ.pop('RENDERER_AUTHORIZATION', None)
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        os.environ.pop('RENDERER_AUTHORIZATION', None)
+        if self.saved is not None:
+            os.environ['RENDERER_AUTHORIZATION'] = self.saved
 
     def write(self, value):
         self.path.write_text(json.dumps({'Render': {'BaseUrl': 'http://renderer:3521/', 'Authorization': value}}))
@@ -431,6 +440,97 @@ class AuthorizationSourceTest(unittest.TestCase):
     def test_a_missing_file_does_not_raise(self):
         source = renderer.AuthorizationSource(path='/does/not/exist.json', refresh=0.0)
         self.assertIsNone(source.current())
+
+    def test_the_generated_environment_wins_over_the_mounted_config(self):
+        # The stack passes the enabled value as an environment variable; a single-file
+        # bind mount does not reliably show a config rewritten after the container
+        # started, so the environment is the source that cannot be missed.
+        self.write('from-the-file')
+        os.environ['RENDERER_AUTHORIZATION'] = 'from-the-environment'
+        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
+        self.assertEqual(source.current(), 'from-the-environment')
+        self.assertTrue(source.status()['usable'])
+        self.assertEqual(source.status()['source'], 'environment')
+
+    def test_an_empty_environment_value_falls_back_to_the_config(self):
+        self.write('from-the-file')
+        os.environ['RENDERER_AUTHORIZATION'] = ''
+        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
+        self.assertEqual(source.current(), 'from-the-file')
+
+    def test_the_status_says_why_no_value_is_usable(self):
+        # The renderer answers 503 with this, so a misconfigured stack explains itself
+        # instead of leaving "no Authorization value configured" without a cause.
+        source = renderer.AuthorizationSource(path='/does/not/exist.json', refresh=0.0)
+        self.assertIsNone(source.current())
+        status = source.status()
+        self.assertEqual(status['source'], 'config file')
+        self.assertFalse(status['usable'])
+        self.assertFalse(status['exists'])
+        self.assertEqual(status['path'], '/does/not/exist.json')
+        self.write('')
+        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
+        self.assertIsNone(source.current())
+        self.assertFalse(source.status()['usable'])
+        self.assertTrue(source.status()['exists'])
+
+
+class RendererEnvironmentTest(unittest.TestCase):
+    """Enabling the renderer must hand the running container the enabled secret."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.compose_env = Path(self.directory.name) / 'compose.env'
+
+    def enable(self, website=None, value='secret-value-0123456789'):
+        website = website if website is not None else {'RccAuthorization': value}
+        return configure_local_docker.enable_renderer(website, compose_env_path=self.compose_env)
+
+    def test_enabling_records_the_value_for_the_renderer_container(self):
+        secret = 'a' * 64
+        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\nLOCAL_UID=1000\n')
+        os.chmod(self.compose_env, 0o600)
+        self.enable({'RccAuthorization': secret})
+        content = self.compose_env.read_text()
+        self.assertIn(f'RENDERER_AUTHORIZATION={secret}\n', content)
+        self.assertIn('COMPOSE_PROJECT_NAME=marine-local\n', content, 'other values must survive')
+        self.assertEqual(oct(os.stat(self.compose_env).st_mode & 0o777), '0o600')
+        self.assertEqual(self.compose_env.read_text().count('RENDERER_AUTHORIZATION='), 1)
+
+    def test_enabling_replaces_an_old_value_instead_of_duplicating_it(self):
+        self.compose_env.write_text('RENDERER_AUTHORIZATION=' + 'b' * 64 + '\nPOSTGRES_DB=marine_local\n')
+        self.enable({'RccAuthorization': 'c' * 64})
+        content = self.compose_env.read_text()
+        self.assertEqual(content.count('RENDERER_AUTHORIZATION='), 1)
+        self.assertIn('RENDERER_AUTHORIZATION=' + 'c' * 64, content)
+        self.assertNotIn('b' * 64, content, 'the rotated value must not stay behind')
+        self.assertIn('POSTGRES_DB=marine_local', content)
+
+    def test_a_value_that_is_not_env_safe_is_refused(self):
+        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\n')
+        for bad in ('short', 'two words', 'quote"d', 'line\nbreak', 'semi;colon'):
+            with self.assertRaises(ValueError, msg=bad):
+                self.enable({'RccAuthorization': bad})
+        self.assertNotIn('RENDERER_AUTHORIZATION', self.compose_env.read_text())
+
+    def test_a_missing_environment_file_is_reported(self):
+        with self.assertRaises(ValueError) as caught:
+            self.enable({'RccAuthorization': 'd' * 64})
+        self.assertIn('start the stack once', str(caught.exception))
+
+    def test_the_website_config_still_gets_the_render_section(self):
+        self.compose_env.write_text('COMPOSE_PROJECT_NAME=marine-local\n')
+        website = {'RccAuthorization': 'e' * 64}
+        result = self.enable(website)
+        self.assertEqual(result['baseUrl'], 'http://renderer:3521/')
+        self.assertEqual(website['Render']['Authorization'], 'e' * 64,
+                         'the website must send the same value, not a second secret')
+
+    def test_the_compose_environment_reaches_the_renderer_service(self):
+        services = yaml.safe_load((ROOT / 'docker-compose.local.yml').read_text())['services']
+        renderer_environment = services['renderer']['environment']
+        self.assertEqual(renderer_environment['RENDERER_AUTHORIZATION'], '${RENDERER_AUTHORIZATION:-}')
 
 
 class RendererRestartToleranceTest(unittest.TestCase):

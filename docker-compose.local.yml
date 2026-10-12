@@ -116,6 +116,9 @@ services:
       RENDERER_JOB_TIMEOUT: ${RENDERER_JOB_TIMEOUT:-120}
       RENDERER_QUERY_TIMEOUT: ${RENDERER_QUERY_TIMEOUT:-10}
       WEBSITE_BASE_URL: http://website:5000
+      # Written by scripts/configure_local_docker.py --enable-renderer, from the same
+      # value the website uses. Empty means "read the mounted config instead".
+      RENDERER_AUTHORIZATION: ${RENDERER_AUTHORIZATION:-}
     ports:
       - '127.0.0.1:${RENDERER_PORT:-3521}:3521'
     volumes:

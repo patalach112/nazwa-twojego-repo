@@ -9,6 +9,9 @@ import urllib.parse
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ('website.json', 'frontend.json', 'migrations.json', 'game-servers.json', 'compose.env', 'manifest.json')
+RENDERER_ENV_KEY = 'RENDERER_AUTHORIZATION'
+# A value that can be written into a `KEY=value` line as-is, without quoting rules.
+ENV_SAFE_VALUE = re.compile(r'[A-Za-z0-9._~+/=:@-]{16,4096}')
 
 
 def parse_origin(value):
@@ -92,18 +95,47 @@ def configure(directory, public_url=None, database=None, project=None, frontend_
     return manifest
 
 
-def enable_renderer(website, base_url='http://renderer:3521/'):
+def write_renderer_authorization(compose_env_path, authorization):
+    """Records the renderer's Authorization value in the generated compose environment.
+
+    The renderer container reads it from the environment. A single-file bind mount does
+    not reliably show a config that was rewritten after the container started, and the
+    secret must not depend on that: compose recreates a service whose environment
+    changed, so enabling rendering can never leave the container without the value.
+    The file is rewritten in place, like every other generated config here, and the one
+    ``RENDERER_AUTHORIZATION`` line is replaced rather than appended.
+    """
+    compose_env_path = Path(compose_env_path)
+    if not compose_env_path.is_file():
+        raise ValueError('No generated compose environment file yet; start the stack once, then enable the renderer')
+    if not ENV_SAFE_VALUE.fullmatch(str(authorization)):
+        raise ValueError('The renderer Authorization value is not safe to write into the compose environment file')
+    kept = [line for line in compose_env_path.read_text().splitlines()
+            if not line.startswith(RENDERER_ENV_KEY + '=')]
+    content = ('\n'.join(kept + [RENDERER_ENV_KEY + '=' + authorization]) + '\n').encode()
+    with open(compose_env_path, 'r+b') as stream:
+        stream.seek(0)
+        stream.write(content)
+        stream.truncate()
+    os.chmod(compose_env_path, 0o600)
+
+
+def enable_renderer(website, base_url='http://renderer:3521/', compose_env_path=None):
     """Points an existing local website config at the local renderer service.
 
     The authorization value is the website's own existing ``RccAuthorization``, so
-    nothing is rotated and no second secret has to be kept in sync. Returns the
-    values it set, so callers can log them without printing the secret itself.
+    nothing is rotated and no second secret has to be kept in sync. When a generated
+    compose environment file is given, the same value is recorded there for the renderer
+    container. Returns the values it set, so callers can log them without printing the
+    secret itself.
     """
     parsed = parse_origin(base_url)
     authorization = website.get('RccAuthorization')
     if not authorization:
         raise ValueError('The website config has no RccAuthorization value to reuse for the renderer')
     website['Render'] = {'BaseUrl': parsed + '/', 'Authorization': authorization}
+    if compose_env_path is not None:
+        write_renderer_authorization(compose_env_path, authorization)
     return {'baseUrl': parsed + '/', 'authorization': 'reused from RccAuthorization'}
 
 
@@ -127,7 +159,7 @@ def main():
             if not website_path.is_file():
                 raise ValueError('No local website config yet; start the stack once, then enable the renderer')
             website = json.loads(website_path.read_text())
-            result = enable_renderer(website, args.renderer_base_url)
+            result = enable_renderer(website, args.renderer_base_url, args.directory / 'compose.env')
             # Rewrite in place: the website container bind-mounts this exact file,
             # so replacing the inode would leave the running container on the old file.
             with open(website_path, 'r+b') as stream:
@@ -136,7 +168,9 @@ def main():
                 stream.truncate()
             os.chmod(website_path, 0o600)
             print('Renderer enabled at ' + result['baseUrl'] + '; authorization ' + result['authorization'] + '.')
-            print('Start it with: ./scripts/local-stack.sh --profile renderer up -d, then restart the website.')
+            print('The renderer value is in the generated compose environment file, so starting or recreating')
+            print('the renderer gives it the enabled secret: ./scripts/local-stack.sh --profile renderer up -d --build,')
+            print('then ./scripts/local-stack.sh restart website.')
         else:
             configure(args.directory, args.public_base_url, args.database_name, args.project_name,
                       args.frontend_port, args.backend_port, args.test)
