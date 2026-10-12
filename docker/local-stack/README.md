@@ -209,6 +209,11 @@ downloaded from the origin the browser uses - refusals for a missing Authorizati
 value and for unimplemented endpoints, and that stopped rendering leaves the asset
 usable with a pending thumbnail.
 
+The avatar flow also needs `user_avatar.thumbnail_3d_url`: the migrator adds it on the
+next stack start (`api/migrations/20261012120000_addAvatarThumbnail3dUrl.js`), and
+without it the website fails on its own avatar update before it can ask the renderer for
+anything.
+
 ## Still outside this stack
 
 There is no operational RCC launcher/proxy or verified real game join. The

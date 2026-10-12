@@ -202,8 +202,9 @@ the last one end to end, from the website's redraw endpoint to the stored avatar
 thumbnail and headshot and the pixels behind the URL the thumbnail API hands the
 frontend, which is what the browser loads. The avatar image has to look like a character
 and not like a background, and the pixels are re-checked after the website's own resize.
-The hat, mesh, headshot and clothing *routes* are implemented (or refused with a reason)
-but not each covered by their own case, so a hat or mesh render is unproven
-outside the avatar path; the `-thumbnail3d` objects, place thumbnails, animations,
-packages and body parts are unimplemented on purpose. No client-visible claim is made
+The headshot route is covered through the avatar step, which asserts the stored
+150x150 file. The hat and mesh routes are implemented and clothing is refused with a
+reason, but neither has a case of its own yet, so a hat or mesh render is unproven. The
+`-thumbnail3d` objects, place thumbnails, animations, packages and body parts are
+unimplemented on purpose. No client-visible claim is made
 about any of them.
