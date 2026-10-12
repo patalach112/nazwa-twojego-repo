@@ -39,7 +39,7 @@ function createFixtureServer() {
     }
     if (pathname.endsWith('/alert-info')) return json({IsVisible: true,
       Text: 'Visual test — sample data only, not a real account or game server.'});
-    if (pathname.endsWith('/chat-settings')) return json({chatEnabled: false, isActiveChatUser: false});
+    if (pathname.endsWith('/chat-settings')) return json({chatEnabled: !member, isActiveChatUser: false});
     if (pathname.endsWith('/count')) return json({count: 0});
     if (pathname.endsWith('/currency')) return json({robux: 125, tickets: 320});
     if (pathname.endsWith('/friends')) return json({data: []});
