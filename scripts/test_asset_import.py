@@ -46,7 +46,13 @@ GENERATOR_NOTICE = "Local Docker configs are ready"
 
 
 def fail(message):
-    raise SystemExit("Asset import test failed: " + message)
+    text = "Asset import test failed: " + message
+    # Surface the reason as a workflow annotation; raw step logs are not always
+    # retrievable and this keeps the diagnostic next to the failing run.
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        escaped = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::error title=Asset import check::{escaped}", file=sys.stderr)
+    raise SystemExit(text)
 
 
 def notice(message):
@@ -202,8 +208,16 @@ def directory_state(directory):
     return sorted((entry.name, entry.stat().st_size) for entry in directory.iterdir() if entry.is_file())
 
 
+def page_message(body):
+    """Short, tag-free excerpt of a Razor result page for failure messages."""
+    text = re.sub(r"<[^>]+>", " ", body.decode("utf-8", "replace"))
+    return " ".join(text.split())[:300]
+
+
 def register(client, backend, prefix):
-    username = prefix + secrets.token_hex(6)
+    # Local usernames are limited to 20 characters, so keep the prefix and the
+    # random suffix inside that budget.
+    username = prefix + secrets.token_hex(3)
     password = "asset-import-" + secrets.token_hex(16)
     status, _, body = client.get(backend + "/auth/signup")
     if status != 200:
@@ -212,11 +226,11 @@ def register(client, backend, prefix):
     form.feed(body.decode("utf-8", "replace"))
     if not form.token:
         fail("the signup page lost its antiforgery token")
-    status, headers, _ = client.post_form(backend + "/auth/signup", {
+    status, headers, body = client.post_form(backend + "/auth/signup", {
         "username": username, "password": password, "__RequestVerificationToken": form.token,
     })
     if status != 302 or headers.get("Location") != "/home":
-        fail(f"signup returned HTTP {status} instead of a dashboard redirect")
+        fail(f"signup returned HTTP {status} instead of a dashboard redirect: {page_message(body)}")
     if ".PEKOSECURITY" not in client.cookies:
         fail("signup did not issue a session cookie")
     status, _, body = client.get(backend + "/apisite/users/v1/users/authenticated")
