@@ -115,14 +115,17 @@ RCC_WINE_YEARS=2016 python3 scripts/test_rcc_wine.py
 
 ## Thumbnail scripts
 
-The bundled 2020 build ships no thumbnail scripts, while a JSON `Thumbnail` job needs
-`internalscripts/thumbnails/<Settings.Type>.lua`. `docker/rcc-wine/internalscripts/thumbnails`
-supplies them and the entrypoint installs the set into the ephemeral runtime copy on
-every start, so the mounted build stays untouched and rebuilding the image is enough to
-update them. They are written for this build's contract - `Settings.Arguments` arrives
-as varargs - and each file lists its arguments on its first line; the renderer service
-in `docker/renderer/` builds exactly those arguments and
-`scripts/test_renderer_contract.py` fails when the two disagree.
+A JSON `Thumbnail` job loads `internalscripts/thumbnails/<Settings.Type>.lua` from the
+runtime copy, and this build ships those scripts itself (`Image.lua`,
+`Model.lua`, `Hat.lua`, `Mesh.lua`, `Shirt.lua`, `Pants.lua`, `Head.lua`,
+`Avatar.lua`, `Avatar_R15_Action.lua`, `Closeup.lua` and more, plus `modules/`).
+They are used exactly as shipped: `Settings.Arguments` arrives as varargs, each file
+declares its own argument list, and nothing in this repository writes to them.
+The entrypoint only *verifies* that every script in
+`docker/rcc-wine/required-thumbnail-scripts.txt` exists and stops with a clear message
+when the mounted build is missing one. `docker/renderer/` builds the arguments for the
+routes it serves, and `scripts/test_renderer_contract.py` parses these shipped files and
+fails when the renderer and a script disagree.
 
 ## Other executables
 

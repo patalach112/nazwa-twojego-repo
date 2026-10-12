@@ -2,11 +2,14 @@
 
 These tests run without Docker or Wine:
 
-* every route the renderer answers must have a matching Lua script, and the
-  argument names in the script header must equal the names the renderer builds,
-  so a renamed or reordered argument cannot silently render the wrong thing,
+* the renderer's routes are checked against the thumbnail scripts RCC 2020 ships and
+  loads (`internalscripts/thumbnails/<Settings.Type>.lua`), parsed from the files
+  themselves, so a script's argument list and the renderer cannot drift apart,
+* nothing in this repository may shadow or replace one of those scripts,
 * the HTTP surface is exercised against a real server with a substitute RCC:
-  authorization, unsupported endpoints, placeholder rejection, JSON errors,
+  authorization, unimplemented endpoints, placeholder rejection, JSON errors,
+* the SOAP reply parser is checked against a decoy text node, a reply with no image
+  and a SOAP fault,
 * the pixel reader used by the integration test is checked on real PNG bytes.
 """
 
@@ -26,7 +29,9 @@ import urllib.request
 import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / 'docker/rcc-wine/internalscripts/thumbnails'
+# The scripts RCC 2020 itself ships and loads by Settings.Type. The renderer has to
+# satisfy their argument lists, and this repository must not shadow them.
+SCRIPTS = ROOT / 'RCCService/RCCService2020/internalscripts/thumbnails'
 sys.path.insert(0, str(ROOT / 'docker/renderer'))
 import renderer  # noqa: E402
 
@@ -49,113 +54,26 @@ def make_png(width, height, left=(255, 0, 0), right=(0, 0, 255)):
             + chunk(b'IEND', b''))
 
 
-class LuaContractTest(unittest.TestCase):
-    """The renderer and the Lua scripts must agree on every argument."""
-
-    def declared_arguments(self, script):
-        header = script.read_text().splitlines()[0]
-        self.assertTrue(header.startswith('-- args: '), f'{script.name} has no argument header')
-        return [name.strip() for name in header[len('-- args: '):].split(',')]
-
-    def built_arguments(self, route, payload):
-        service = renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite())
-        builder = service.routes[route]
-        return builder(service, payload)
-
-    def test_every_route_is_backed_by_a_script_and_matching_arguments(self):
-        """The Lua headers are the contract; the renderer must satisfy them exactly."""
-        service = renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite())
-        cases = {
-            '/image/image': {'assetId': 7},
-            '/catalog/model': {'assetId': 7},
-            '/catalog/hat': {'assetId': 7},
-            '/catalog/mesh': {'assetId': 7},
-            '/catalog/head': {'assetId': 7},
-            '/image/clothing': {'assetId': 7},
-            '/image/teeshirt': {'assetId': 7},
-            '/player/thumbnail': {'userId': 3},
-            '/player/headshot': {'userId': 3},
-        }
-        self.assertEqual(set(cases), set(service.routes), 'every route needs a case here')
-        script_types = set()
-        for route, payload in cases.items():
-            builder = service.routes[route]
-            script_type, arguments = builder(service, payload)
-            script_types.add(script_type)
-            script = SCRIPTS / (script_type + '.lua')
-            self.assertTrue(script.is_file(), f'{route} needs {script.name}')
-            declared = self.declared_arguments(script)
-            self.assertEqual(len(arguments), len(declared),
-                             f'{script.name} declares {declared} but {route} passes {arguments}')
-            for name, value in zip(declared, arguments):
-                if name == 'fileExtension':
-                    self.assertEqual(value, 'PNG', f'{script.name}: unexpected format {value!r}')
-                elif name in ('width', 'height'):
-                    self.assertEqual(value, 420, f'{script.name}: unexpected size {value!r}')
-                elif name.endswith('Url'):
-                    self.assertIsInstance(value, str, f'{script.name}: {name} must be a URL string')
-                    self.assertTrue(value, f'{script.name}: {name} must not be empty')
-                elif name == 'clothingUrls':
-                    self.assertIsInstance(value, str, f'{script.name}: {name} must be a string')
-                elif name == 'baseUrl':
-                    self.assertEqual(value, 'http://website.test', f'{script.name}: unexpected base URL')
-                elif name.endswith('Color'):
-                    self.assertIsInstance(value, int, f'{script.name}: {name} must be a BrickColor number')
-                elif name in ('hideSky', 'crop'):
-                    self.assertIsInstance(value, bool, f'{script.name}: {name} must be a flag')
-                else:
-                    self.fail(f'{script.name}: the renderer passes {name}, which no test covers')
-        expected_types = {'Image', 'Model', 'Mesh', 'Head', 'Clothing', 'TeeShirt', 'Avatar', 'Closeup'}
-        self.assertEqual(script_types, expected_types, 'a script is unused or missing from this contract')
-        self.assertTrue((SCRIPTS / 'README.md').is_file(), 'the script contract must be documented')
-
-    def test_avatar_arguments_carry_the_worn_clothing_in_script_order(self):
-        script_type, arguments = self.built_arguments('/player/thumbnail', {'userId': 3})
-        self.assertEqual(script_type, 'Avatar')
-        self.assertEqual(arguments[:4], ['PNG', 420, 420, renderer.R6_RIG])
-        self.assertEqual(len(arguments), 12)
-        self.assertEqual(arguments[4:10], [1, 2, 3, 4, 5, 6], 'body colours keep the script order')
-        self.assertEqual(arguments[10], 'http://website.test/asset/?id=11', 'worn clothing is passed')
-        self.assertEqual(arguments[11], 'http://website.test')
-
-    def test_an_r15_account_uses_the_r15_rig(self):
-        service = renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite(rig='R15'))
-        script_type, arguments = service.arguments_avatar({'userId': 3})
-        self.assertEqual(script_type, 'Avatar')
-        self.assertEqual(arguments[3], renderer.R15_RIG)
-
-    def test_missing_ids_are_rejected_instead_of_rendering_asset_zero(self):
-        for payload in ({}, {'assetId': 'x'}, {'assetId': 0}, {'assetId': -3}):
-            with self.assertRaises(renderer.RenderError):
-                self.built_arguments('/image/image', payload)
-        for payload in ({}, {'userId': 'x'}, {'userId': 0}):
-            with self.assertRaises(renderer.RenderError):
-                self.built_arguments('/player/thumbnail', payload)
-
-    def test_unsupported_endpoints_are_explicit_and_disjoint(self):
-        service = renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite())
-        self.assertTrue(service.unsupported, 'the unsupported list must not be empty')
-        self.assertEqual(service.unsupported & set(service.routes), set(),
-                         'an endpoint cannot be both supported and unsupported')
-
-    def test_untrusted_requests_cannot_choose_a_url(self):
-        service = renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite())
-        _, arguments = service.arguments_image({'assetId': 12, 'assetUrl': 'http://evil.example/'})
-        self.assertEqual(arguments[0], 'http://website.test/asset/?id=12',
-                         'the asset URL must come from configuration, never from the request')
-
-
 class FakeRcc:
+    """Substitute RCC: records calls and answers with a real PNG of the asked size."""
+
     def __init__(self, image=None, error=None):
         self.image = image
         self.error = error
         self.calls = []
         self.jobs = []
+        self.version = '0.450.0.411923'
+        self.busy = False
 
     def get_version(self, max_age=10.0):
         if self.error:
             raise renderer.RenderError(self.error)
-        return '0.450.0.411923'
+        return self.version
+
+    def health(self):
+        if self.error:
+            raise renderer.RenderError(self.error)
+        return {'version': self.version, 'lastContactSeconds': 0.4, 'busy': self.busy, 'stale': False}
 
     def render(self, script_type, arguments, expected_edge):
         self.calls.append((script_type, arguments, expected_edge))
@@ -167,6 +85,8 @@ class FakeRcc:
 
 
 class FakeWebsite:
+    """Substitute appearance document, shaped like /v1.1/avatar-fetch."""
+
     def __init__(self, rig='R6', error=None):
         self.base_url = 'http://website.test'
         self.rig = rig
@@ -183,34 +103,136 @@ class FakeWebsite:
         }
 
 
+class LuaContractTest(unittest.TestCase):
+    """The renderer must satisfy RCC's own thumbnail scripts, unmodified."""
+
+    def declared_arguments(self, script):
+        """The varargs list from the script's own first assignment to `...`."""
+        for line in script.read_text().splitlines():
+            if line.strip().startswith('--') or '=' not in line:
+                continue
+            head, _, tail = line.partition('=')
+            if tail.strip() != '...':
+                continue
+            names = [name.strip() for name in head.replace('local', '', 1).split(',')]
+            return [name for name in names if name]
+        self.fail(f'{script.name} does not declare a varargs argument list')
+
+    def renderer_for(self, rig='R6'):
+        return renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite(rig=rig))
+
+    def test_the_build_ships_every_script_the_renderer_asks_for(self):
+        required = [line.strip() for line in (ROOT / 'docker/rcc-wine/required-thumbnail-scripts.txt')
+                    .read_text().splitlines() if line.strip() and not line.startswith('#')]
+        self.assertIn('Image', required)
+        self.assertIn('Avatar', required)
+        for name in required:
+            self.assertTrue((SCRIPTS / f'{name}.lua').is_file(),
+                            f'{name}.lua is listed as required but the build does not ship it')
+
+    def test_this_repository_never_shadows_a_shipped_script(self):
+        offenders = [str(path.relative_to(ROOT)) for path in (ROOT / 'docker/rcc-wine').rglob('*.lua')
+                     if path.parent.name in ('thumbnails', 'internalscripts')]
+        self.assertEqual(offenders, [], 'a local script would shadow one RCC ships')
+
+    def test_every_route_is_backed_by_a_shipped_script_and_matching_arguments(self):
+        service = self.renderer_for()
+        cases = {
+            '/image/image': {'assetId': 7},
+            '/catalog/model': {'assetId': 7},
+            '/catalog/hat': {'assetId': 7},
+            '/catalog/mesh': {'assetId': 7},
+            '/player/thumbnail': {'userId': 3},
+            '/player/headshot': {'userId': 3},
+        }
+        self.assertEqual(set(cases), set(service.routes), 'every route needs a case here')
+        for route, payload in cases.items():
+            script_type, arguments = service.routes[route](service, payload)
+            script = SCRIPTS / (script_type + '.lua')
+            self.assertTrue(script.is_file(), f'{route} needs {script.name}, which this build ships')
+            declared = self.declared_arguments(script)
+            self.assertEqual(len(arguments), len(declared),
+                             f'{script.name} declares {declared} but {route} passes {arguments}')
+            for name, value in zip(declared, arguments):
+                if name == 'fileExtension':
+                    self.assertEqual(value, 'PNG', f'{script.name}: unexpected format {value!r}')
+                elif name in ('x', 'y', 'width', 'height'):
+                    self.assertEqual(value, 420, f'{script.name}: unexpected size {value!r}')
+                elif name == 'baseUrl':
+                    self.assertEqual(value, 'http://website.test', f'{script.name}: unexpected base URL')
+                elif name == 'characterAppearanceUrl':
+                    self.assertEqual(value, 'http://website.test/v1.1/avatar-fetch?userId=3',
+                                     f'{script.name}: the appearance document must be this website')
+                elif name == 'assetUrl':
+                    self.assertEqual(value, 'http://website.test/asset/?id=7',
+                                     f'{script.name}: the asset URL must be this website')
+                elif name == 'imageId':
+                    self.assertEqual(value, 7, f'{script.name}: the image id must be passed through')
+                else:
+                    self.assertIn(value, (True, 40, 60, 0),
+                                  f'{script.name}: {name} carries an unexpected value {value!r}')
+
+    def test_the_closeup_zooms_are_the_ones_this_project_used(self):
+        """game-renderer/scripts/Closeup.json is this project's own record of them."""
+        template = json.loads((ROOT / 'game-renderer/scripts/Closeup.json').read_text())
+        self.assertEqual(template['Settings']['Type'], 'Closeup')
+        script_type, arguments = self.renderer_for().arguments_headshot({'userId': 3})
+        self.assertEqual(script_type, 'Closeup')
+        self.assertEqual(arguments[5:], [True, 40, 60, 0, 0])
+        self.assertEqual(template['Settings']['Arguments'][5:], [True, 40, 60, 0, 0])
+
+    def test_r6_and_r15_accounts_get_their_own_script_and_its_own_order(self):
+        appearance = 'http://website.test/v1.1/avatar-fetch?userId=3'
+        for rig, script, expected in (
+                ('R6', 'Avatar', [appearance, 'http://website.test', 'PNG', 420, 420]),
+                ('R15', 'Avatar_R15_Action', ['http://website.test', appearance, 'PNG', 420, 420])):
+            script_type, arguments = self.renderer_for(rig).arguments_avatar({'userId': 3})
+            self.assertEqual(script_type, script)
+            self.assertEqual(arguments, expected,
+                             f'{script}.lua declares the first two arguments in this order')
+
+    def test_missing_ids_are_rejected_instead_of_rendering_asset_zero(self):
+        service = self.renderer_for()
+        for payload in ({}, {'assetId': 'x'}, {'assetId': 0}, {'assetId': -3}):
+            with self.assertRaises(renderer.RenderError):
+                service.arguments_image(payload)
+            with self.assertRaises(renderer.RenderError):
+                service.arguments_model(payload)
+        for payload in ({}, {'userId': 'x'}, {'userId': 0}):
+            with self.assertRaises(renderer.RenderError):
+                service.arguments_avatar(payload)
+
+    def test_unimplemented_endpoints_say_what_is_missing(self):
+        service = self.renderer_for()
+        self.assertEqual(set(service.unsupported) & set(service.routes), set(),
+                         'an endpoint cannot be both supported and unsupported')
+        for route in ('/image/clothing', '/catalog/head'):
+            self.assertIn('mannequin', service.unsupported[route],
+                          f'{route} stays pending because the shipped script needs a mannequin asset')
+        for route, reason in service.unsupported.items():
+            self.assertGreater(len(reason), 20, f'{route} needs a concrete reason')
+
+    def test_untrusted_requests_cannot_choose_a_url(self):
+        service = self.renderer_for()
+        _, arguments = service.arguments_model({'assetId': 12, 'assetUrl': 'http://evil.example/'})
+        self.assertEqual(arguments[0], 'http://website.test/asset/?id=12',
+                         'the asset URL must come from configuration, never from the request')
+
+
 class AppearanceTest(unittest.TestCase):
-    """The appearance document is the website's, so only its shape is assumed."""
+    """The appearance document is the website's; only its shape is assumed."""
 
-    def test_both_colour_spellings_are_accepted_in_script_order(self):
-        appearance = {'bodyColors': {'HeadColor': 1, 'TorsoColor': 2, 'leftArmColorId': 3,
-                                     'RightArmColor': 4, 'LeftLegColor': '5'}}
-        self.assertEqual(renderer.body_colours(appearance), [1, 2, 3, 4, 5, 0],
-                         'a missing colour must become 0, not shift the list')
+    def test_the_rig_type_decides_which_shipped_avatar_script_runs(self):
+        for rig, expected in (('R6', 'Avatar'), ('r15', 'Avatar_R15_Action'), ('R15', 'Avatar_R15_Action')):
+            service = renderer.Renderer(rcc=FakeRcc(), website=FakeWebsite(rig=rig))
+            self.assertEqual(service.avatar_script(3), expected)
 
-    def test_an_empty_or_missing_document_does_not_raise(self):
-        self.assertEqual(renderer.body_colours({}), [0] * 6)
-        self.assertEqual(renderer.body_colours({'bodyColors': {'HeadColor': 'not-a-number'}})[0], 0)
-
-    def test_clothing_is_passed_in_a_fixed_order_and_only_from_this_website(self):
-        appearance = {'assetAndAssetTypeIds': [
-            {'assetId': 21, 'assetTypeId': 12},   # Pants
-            {'assetId': 11, 'assetTypeId': 11},   # Shirt
-            {'assetId': 31, 'assetTypeId': 8},    # Hat, not clothing
-            {'assetId': 41, 'assetTypeId': 2},    # TeeShirt
-        ]}
-        urls = renderer.clothing_urls(appearance, 'http://website.test').split(';')
-        self.assertEqual(urls, ['http://website.test/asset/?id=11', 'http://website.test/asset/?id=21',
-                                'http://website.test/asset/?id=41'])
-
-    def test_an_account_without_clothing_or_ids_yields_no_urls(self):
-        self.assertEqual(renderer.clothing_urls({}, 'http://website.test'), '')
-        self.assertEqual(renderer.clothing_urls({'assetAndAssetTypeIds': [{'assetId': 0, 'assetTypeId': 11}]},
-                                                'http://website.test'), '')
+    def test_a_missing_document_is_reported_instead_of_guessing_a_rig(self):
+        service = renderer.Renderer(rcc=FakeRcc(),
+                                    website=FakeWebsite(error='the appearance for user 3 could not be read'))
+        with self.assertRaises(renderer.RenderError) as caught:
+            service.arguments_avatar({'userId': 3})
+        self.assertIn('appearance', str(caught.exception))
 
 
 class RccReplyTest(unittest.TestCase):
@@ -247,17 +269,16 @@ class RccReplyTest(unittest.TestCase):
     def test_a_decoy_long_string_before_the_image_is_ignored(self):
         """A job id or a log line must not be mistaken for the rendered image."""
         image = base64.b64encode(make_png(420, 420)).decode()
-        decoy = 'x' * 400
-        url = self.start_rcc(self.envelope(decoy, image))
+        url = self.start_rcc(self.envelope('x' * 400, image))
         client = renderer.RccClient(url=url, job_timeout=30)
-        rendered = client.render('Image', ['http://website.test/asset/?id=1', 'PNG', 420, 420], 420)
+        rendered = client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
         self.assertEqual(renderer.image_details(rendered), ('PNG', 420, 420))
 
     def test_a_reply_without_an_image_is_reported_clearly(self):
         url = self.start_rcc(self.envelope('job-finished-with-no-image-at-all'))
         client = renderer.RccClient(url=url, job_timeout=30)
         with self.assertRaises(renderer.RenderError) as caught:
-            client.render('Image', ['http://website.test/asset/?id=1', 'PNG', 420, 420], 420)
+            client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
         self.assertIn('did not return a usable image', str(caught.exception))
 
     def test_a_soap_fault_is_reported_as_a_render_error(self):
@@ -266,8 +287,17 @@ class RccReplyTest(unittest.TestCase):
                              '</s:Body></s:Envelope>')
         client = renderer.RccClient(url=url, job_timeout=30)
         with self.assertRaises(renderer.RenderError) as caught:
-            client.render('Image', ['http://website.test/asset/?id=1', 'PNG', 420, 420], 420)
+            client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
         self.assertIn('script file not found', str(caught.exception))
+
+    def test_a_real_placeholder_of_1x1_is_never_returned_as_an_image(self):
+        """RCC's own scripts fall back to a tiny hourglass; that is not a render."""
+        hourglass = base64.b64encode(make_png(1, 1)).decode()
+        url = self.start_rcc(self.envelope(hourglass))
+        client = renderer.RccClient(url=url, job_timeout=30)
+        with self.assertRaises(renderer.RenderError) as caught:
+            client.render('Image', [7, 'http://website.test', 'PNG', 420, 420], 420)
+        self.assertIn('placeholder', str(caught.exception))
 
 
 class AuthorizationSourceTest(unittest.TestCase):
@@ -291,28 +321,27 @@ class AuthorizationSourceTest(unittest.TestCase):
         self.write('')
         self.assertIsNone(source.current(), 'an emptied value must not stay accepted')
 
-    def test_the_environment_wins_and_survives_a_missing_file(self):
-        source = renderer.AuthorizationSource(path=str(self.path), refresh=0.0)
+    def test_a_missing_file_does_not_raise(self):
+        source = renderer.AuthorizationSource(path='/does/not/exist.json', refresh=0.0)
         self.assertIsNone(source.current())
-        self.assertTrue(renderer.AuthorizationSource(
-            path='/does/not/exist.json').current() in (None, ''))
 
 
 class WarmupTest(unittest.TestCase):
-    def test_warmup_reports_every_step_and_states(self):
+    def test_the_warm_up_renders_the_builds_own_rig_through_its_own_script(self):
         rcc = FakeRcc()
         service = renderer.Renderer(rcc=rcc, website=FakeWebsite())
         service.warm_up()
         self.assertEqual(service.warmup['state'], 'ok', service.warmup)
-        self.assertEqual(set(service.warmup['steps']), {'texture', 'rig'})
-        self.assertEqual(rcc.calls[0][0], 'Image')
-        self.assertTrue(rcc.calls[0][1][0].endswith(renderer.WARMUP_TEXTURE))
+        self.assertEqual(service.warmup['script'], renderer.WARMUP_SCRIPT)
+        self.assertEqual(rcc.calls[0][0], 'Model')
+        self.assertEqual(rcc.calls[0][1][0], renderer.R6_RIG)
+        self.assertEqual(rcc.calls[0][1][4], 'http://website.test')
 
-    def test_a_failing_texture_warmup_is_reported_not_hidden(self):
+    def test_a_failed_warm_up_is_reported_not_hidden(self):
         service = renderer.Renderer(rcc=FakeRcc(error='RCC is unreachable'), website=FakeWebsite())
         service.warm_up()
         self.assertEqual(service.warmup['state'], 'failed')
-        self.assertIn('unreachable', service.warmup['steps']['texture']['detail'])
+        self.assertIn('unreachable', service.warmup['detail'])
 
 
 class ServerCase(unittest.TestCase):
@@ -334,11 +363,10 @@ class ServerCase(unittest.TestCase):
     def post(self, path, payload=None, authorization=..., raw=None):
         body = raw if raw is not None else json.dumps(payload or {}).encode()
         headers = {'Content-Type': 'application/json'}
-        if authorization is not ...:
-            if authorization is not None:
-                headers['Authorization'] = authorization
-        else:
+        if authorization is ...:
             headers['Authorization'] = self.authorization
+        elif authorization is not None:
+            headers['Authorization'] = authorization
         request = urllib.request.Request(self.url + path, data=body, headers=headers, method='POST')
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
@@ -365,15 +393,14 @@ class ServerCase(unittest.TestCase):
         status, _ = self.post('/image/image', {'assetId': 5}, authorization='wrong-value')
         self.assertEqual(status, 401)
 
-    def test_an_unsupported_endpoint_is_explicit(self):
+    def test_an_unsupported_endpoint_is_explicit_about_the_missing_piece(self):
         self.start_server(FakeRcc())
-        status, body = self.post('/game/thumbnail', {'placeId': 1})
+        status, body = self.post('/image/clothing', {'assetId': 1})
         self.assertEqual(status, 501)
-        self.assertIn('not implemented', body['message'])
+        self.assertIn('mannequin', body['message'])
 
     def test_a_placeholder_is_never_returned_as_success(self):
-        rcc = FakeRcc(image=base64.b64decode(
-            b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='))
+        rcc = FakeRcc(image=make_png(1, 1))
         self.start_server(rcc)
         status, body = self.post('/image/image', {'assetId': 5})
         self.assertEqual(status, 502)
@@ -385,23 +412,21 @@ class ServerCase(unittest.TestCase):
         status, body = self.post('/image/image', {'assetId': 5})
         self.assertEqual(status, 502)
         self.assertIn('unreachable', body['message'])
-        status, body = self.post('/image/image', {}, )
-        self.assertEqual(status, 502)
 
     def test_invalid_json_and_unknown_paths_are_reported(self):
         self.start_server(FakeRcc())
         status, body = self.post('/image/image', raw=b'not json')
         self.assertEqual(status, 400)
         self.assertIn('Invalid JSON', body['message'])
-        status, body = self.post('/nope', {'assetId': 1})
+        status, _ = self.post('/nope', {'assetId': 1})
         self.assertEqual(status, 404)
 
-    def test_health_reports_the_rcc_version_the_warm_up_and_a_failure_honestly(self):
+    def test_health_reports_rcc_and_the_warm_up_or_fails_honestly(self):
         self.start_server(FakeRcc())
-        renderer.Handler.renderer.warmup = {'state': 'ok', 'steps': {}}
+        renderer.Handler.renderer.warmup = {'state': 'ok', 'script': 'Model'}
         with urllib.request.urlopen(self.url + '/healthz', timeout=10) as response:
             body = json.loads(response.read())
-        self.assertEqual(body['rccVersion'], '0.450.0.411923')
+        self.assertEqual(body['rcc']['version'], '0.450.0.411923')
         self.assertEqual(body['warmup']['state'], 'ok')
         self.start_server(FakeRcc(error='RCC is unreachable'))
         with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -421,17 +446,15 @@ class PixelReaderTest(unittest.TestCase):
     """The integration test's pixel reader must be trustworthy on real PNG bytes."""
 
     def setUp(self):
-        sys.path.insert(0, str(ROOT / 'scripts'))
+        # Loading the integration test must not run its stack checks.
+        os.environ.pop('RENDERER_TEST', None)
         spec = importlib.util.spec_from_file_location('renderer_test_helpers',
                                                       ROOT / 'scripts/test_local_renderer.py')
-        # The integration test must not run its stack checks on import.
-        os.environ.pop('RENDERER_TEST', None)
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
 
     def test_left_and_right_halves_are_read_back(self):
-        data = make_png(64, 16)
-        width, height, rows = self.module.read_png(data)
+        width, height, rows = self.module.read_png(make_png(64, 16))
         self.assertEqual((width, height), (64, 16))
         left = self.module.colour_at(rows, width, 5, 8)
         right = self.module.colour_at(rows, width, 60, 8)
@@ -441,20 +464,17 @@ class PixelReaderTest(unittest.TestCase):
         self.assertLess(right[0], 60)
 
     def test_a_filtered_png_is_decoded_correctly(self):
-        # Build the same image, then re-encode it with filter type 1 (Sub) on every
-        # row, which is what real encoders emit; the reader must still agree.
+        """Real encoders emit filtered scanlines; the reader must undo them."""
         width, height, rows = self.module.read_png(make_png(8, 4))
         raw = b''
-        previous = [0] * (width * 3)
         for row in rows:
             filtered = bytes((row[i] - (row[i - 3] if i >= 3 else 0)) & 0xFF for i in range(len(row)))
             raw += b'\x01' + filtered
-            previous = row
-        data = make_png(8, 4)
-        # Rebuild a container around the re-encoded scanlines.
+
         def chunk(kind, payload):
             return (struct.pack('>I', len(payload)) + kind + payload
                     + struct.pack('>I', zlib.crc32(kind + payload) & 0xFFFFFFFF))
+
         container = (b'\x89PNG\r\n\x1a\n'
                      + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0))
                      + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))

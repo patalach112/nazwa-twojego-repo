@@ -42,11 +42,13 @@ DEFAULT_WEBSITE_URL = 'http://website:5000'
 R6_RIG = 'rbxasset://avatar/character.rbxm'
 R15_RIG = 'rbxasset://avatar/characterR15.rbxm'
 PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
-# Startup warm-up: a texture render over HTTP (the path real asset renders use) and
-# a bundled-rig render (the path avatar/clothing renders use). Wine and RCC pay
-# their first-render cost here, not inside a user request.
-WARMUP_TEXTURE = '/img/Audio.png'
-WARMUP_RIG = R6_RIG
+# The website's own render client allows ten seconds per request, so Wine's and
+# RCC's first-render cost is paid at startup by rendering the build's own avatar rig
+# through RCC's shipped Model script. Nothing is downloaded for it.
+WARMUP_SCRIPT = 'Model'
+# RCC answers SOAP while it is busy rendering only sometimes; a service that spoke to
+# us recently is not reported as broken in the middle of a long render.
+HEALTH_STALE_SECONDS = float(os.environ.get('RENDERER_HEALTH_STALE', '120'))
 
 # Only these host names may be fetched for an appearance document. The renderer
 # is reachable from every service in the compose network, so it must not become
@@ -102,6 +104,8 @@ class RccClient:
         self.job_timeout = job_timeout or int(os.environ.get('RENDERER_JOB_TIMEOUT', '90'))
         self.version = None
         self.version_at = 0.0
+        self.last_contact_at = 0.0
+        self.busy = False
 
     def call(self, method, children, timeout=None):
         envelope = ET.Element(f'{{{SOAP_ENVELOPE}}}Envelope')
@@ -127,10 +131,34 @@ class RccClient:
                 root = ET.fromstring(error.read())
         except (urllib.error.URLError, OSError, ET.ParseError) as error:
             raise RenderError('RCC is unreachable: ' + str(error)) from None
+        # Any parsed reply, fault or not, proves RCC itself is alive.
+        self.last_contact_at = time.monotonic()
         fault = root.find(f'.//{{{SOAP_ENVELOPE}}}Fault')
         if fault is not None:
             raise RenderError('RCC rejected the job: ' + ' '.join(fault.itertext()).strip()[:400])
         return root
+
+    def health(self):
+        """What /healthz reports: RCC's version and how recently it spoke to us.
+
+        A render job keeps this process busy for seconds, and RCC can be slow to
+        answer GetVersion while it renders, so a recent contact is enough for the
+        service to be considered healthy instead of flapping in the middle of a job.
+        """
+        age = time.monotonic() - self.last_contact_at if self.last_contact_at else None
+        fresh = age is not None and age <= HEALTH_STALE_SECONDS
+        error = None
+        if age is None or not fresh:
+            try:
+                version = self.get_version(max_age=0)
+                age = time.monotonic() - self.last_contact_at
+                fresh = True
+            except RenderError as failure:
+                error = str(failure)
+        if not fresh:
+            raise RenderError(error or 'RCC has not answered any request yet')
+        return {'version': self.version, 'lastContactSeconds': None if age is None else round(age, 1),
+                'busy': self.busy, 'stale': not (age is None or age <= 5.0)}
 
     def get_version(self, max_age=10.0):
         if self.version and time.monotonic() - self.version_at < max_age:
@@ -158,10 +186,12 @@ class RccClient:
             'Arguments': {},
         })
         opened = False
+        self.busy = True
         try:
             reply = self.call('OpenJobEx', [job, script])
             opened = True
         finally:
+            self.busy = False
             if opened:
                 close = ET.Element('jobID')
                 close.text = job_id
@@ -204,46 +234,6 @@ class WebsiteClient:
             raise RenderError(f'the appearance for user {user_id} could not be read: {error}') from None
 
 
-def body_colours(appearance):
-    """BrickColor numbers in the order Avatar.lua/Closeup.lua expect them.
-
-    `/v1.1/avatar-fetch` answers both the capitalised and the `...ColorId` spelling of
-    every colour; either is accepted and a missing one becomes 0, which the scripts
-    treat as "keep the rig's own colour" instead of crashing the render.
-    """
-    colours = appearance.get('bodyColors') or {}
-    order = ('Head', 'Torso', 'LeftArm', 'RightArm', 'LeftLeg', 'RightLeg')
-    values = []
-    for name in order:
-        value = None
-        for key in (name + 'Color', name + 'ColorId',
-                    name[0].lower() + name[1:] + 'Color', name[0].lower() + name[1:] + 'ColorId'):
-            if colours.get(key) is not None:
-                value = colours[key]
-                break
-        try:
-            values.append(int(value) if value is not None else 0)
-        except (TypeError, ValueError):
-            values.append(0)
-    return values
-
-
-def clothing_urls(appearance, website):
-    """Local asset URLs for the clothing the account is wearing, in a fixed order."""
-    type_ids = {'Shirt': 11, 'Pants': 12, 'TeeShirt': 2}
-    entries = appearance.get('assetAndAssetTypeIds') or []
-    urls = []
-    for kind in ('Shirt', 'Pants', 'TeeShirt'):
-        wanted = type_ids[kind]
-        for entry in entries:
-            if entry.get('assetTypeId') == wanted:
-                asset_id = int(entry.get('assetId') or 0)
-                if asset_id > 0:
-                    urls.append(f'{website}/asset/?id={asset_id}')
-                break
-    return ';'.join(urls)
-
-
 class Renderer:
     """Maps the website's renderer endpoints onto RCC thumbnail scripts."""
 
@@ -255,64 +245,92 @@ class Renderer:
         self.max_retries = max(0, int(os.environ.get('RENDERER_MAX_RETRIES', '1')))
         self.warmup = {'state': 'pending', 'steps': {}}
 
-    # -- argument builders, one per script; names must match the Lua headers ----
+    # -- argument builders ----------------------------------------------------
+    # Every order and value below follows a script RCC ships in
+    # RCCService/RCCService2020/internalscripts/thumbnails (declared in its first
+    # "local ... = ..." line) and, where this repository has one, the matching
+    # template in game-renderer/scripts/*.json. Nothing here writes or overrides a
+    # Roblox-authored script; scripts/test_renderer_contract.py parses the shipped
+    # files and fails when these builders stop matching them.
+
     def arguments_image(self, payload):
-        asset_id = self.asset_id(payload)
-        return 'Image', [self.asset_url(asset_id), 'PNG', 420, 420]
+        """Image.lua: imageId, baseUrl, fileExtension, x, y."""
+        return 'Image', [self.asset_id(payload), self.base_url, 'PNG', 420, 420]
 
     def arguments_model(self, payload):
-        asset_id = self.asset_id(payload)
-        return 'Model', [self.asset_url(asset_id), 'PNG', 420, 420, True, True]
+        """Model.lua: assetUrl, fileExtension, x, y, baseUrl."""
+        return 'Model', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.base_url]
+
+    def arguments_hat(self, payload):
+        """Hat.lua: assetUrl, fileExtension, x, y, baseUrl."""
+        return 'Hat', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.base_url]
 
     def arguments_mesh(self, payload):
-        asset_id = self.asset_id(payload)
-        return 'Mesh', [self.asset_url(asset_id), 'PNG', 420, 420]
+        """Mesh.lua: assetUrl, fileExtension, x, y, baseUrl."""
+        return 'Mesh', [self.asset_url(self.asset_id(payload)), 'PNG', 420, 420, self.base_url]
 
-    def arguments_head(self, payload):
-        asset_id = self.asset_id(payload)
-        return 'Head', [self.asset_url(asset_id), 'PNG', 420, 420, R6_RIG]
+    def appearance_url(self, user_id):
+        """The appearance document RCC's avatar scripts fetch themselves."""
+        return f'{self.base_url}{APPEARANCE_PATH}?userId={int(user_id)}'
 
-    def arguments_clothing(self, payload):
-        asset_id = self.asset_id(payload)
-        return 'Clothing', [self.asset_url(asset_id), 'PNG', 420, 420, R6_RIG]
+    def avatar_script(self, user_id):
+        """Avatar.lua for R6, Avatar_R15_Action.lua for R15 accounts.
 
-    def arguments_teeshirt(self, payload):
-        asset_id = self.asset_id(payload)
-        return 'TeeShirt', [self.asset_url(asset_id), 'PNG', 420, 420, R6_RIG]
+        game-renderer/scripts/Avatar.json asks for Avatar_R15_Action; the R6 script
+        is the same contract without the R15 pose handling.
+        """
+        rig = str(self.website.appearance(user_id).get('resolvedAvatarType', 'R6')).upper()
+        return 'Avatar_R15_Action' if rig == 'R15' else 'Avatar'
+
+    # The shipped scripts disagree about the first two arguments: Avatar.lua takes the
+    # appearance URL first, Avatar_R15_Action.lua takes the base URL first. Both orders
+    # come from the scripts themselves and are checked by the contract test.
+    avatar_argument_order = {
+        'Avatar': ('characterAppearanceUrl', 'baseUrl', 'fileExtension', 'x', 'y'),
+        'Avatar_R15_Action': ('baseUrl', 'characterAppearanceUrl', 'fileExtension', 'x', 'y'),
+    }
 
     def arguments_avatar(self, payload):
+        """Avatar.lua / Avatar_R15_Action.lua, each in its own declared order."""
         user_id = self.user_id(payload)
-        appearance = self.website.appearance(user_id)
-        rig = R15_RIG if str(appearance.get('resolvedAvatarType', 'R6')).upper() == 'R15' else R6_RIG
-        return 'Avatar', ['PNG', 420, 420, rig, *body_colours(appearance),
-                          clothing_urls(appearance, self.base_url), self.base_url]
+        script = self.avatar_script(user_id)
+        values = {'baseUrl': self.base_url, 'characterAppearanceUrl': self.appearance_url(user_id),
+                  'fileExtension': 'PNG', 'x': 420, 'y': 420}
+        return script, [values[name] for name in self.avatar_argument_order[script]]
 
     def arguments_headshot(self, payload):
+        """Closeup.lua: baseUrl, characterAppearanceUrl, fileExtension, x, y,
+        quadratic, baseHatZoom, maxHatZoom, cameraOffsetX, cameraOffsetY.
+
+        The zoom values are the ones this repository's own Closeup template uses.
+        """
         user_id = self.user_id(payload)
-        appearance = self.website.appearance(user_id)
-        rig = R15_RIG if str(appearance.get('resolvedAvatarType', 'R6')).upper() == 'R15' else R6_RIG
-        return 'Closeup', ['PNG', 420, 420, rig, *body_colours(appearance),
-                           clothing_urls(appearance, self.base_url), self.base_url]
+        return 'Closeup', [self.base_url, self.appearance_url(user_id), 'PNG', 420, 420,
+                           True, 40, 60, 0, 0]
 
     routes = {
         '/image/image': arguments_image,
         '/catalog/model': arguments_model,
-        '/catalog/hat': arguments_model,
+        '/catalog/hat': arguments_hat,
         '/catalog/mesh': arguments_mesh,
-        '/catalog/head': arguments_head,
-        '/image/clothing': arguments_clothing,
-        '/image/teeshirt': arguments_teeshirt,
         '/player/thumbnail': arguments_avatar,
         '/player/headshot': arguments_headshot,
     }
 
-    # Endpoints the website can call but this renderer does not implement yet.
-    # They fail loudly so the website keeps a pending thumbnail instead of a fake
-    # one; each needs data we do not have locally (package contents, animation
-    # files, a real place).
+    # Endpoints the website can call but this renderer does not answer yet. Each one
+    # needs something this stack does not have, and each fails loudly so the website
+    # keeps a pending thumbnail instead of storing a substitute picture.
     unsupported = {
-        '/catalog/package', '/catalog/bodypart', '/catalog/animationsilhouette',
-        '/catalog/animation', '/game/thumbnail', '/player/thumbnail-3d',
+        '/image/clothing': 'RCC\'s own Shirt.lua/Pants.lua load a mannequin asset, and this '
+                           'stack has no local mannequin asset yet',
+        '/image/teeshirt': 'this build ships no TeeShirt thumbnail script',
+        '/catalog/head': 'RCC\'s own Head.lua needs the same mannequin asset',
+        '/catalog/bodypart': 'RCC\'s own BodyPart.lua needs a rig URL this stack does not serve',
+        '/catalog/package': 'RCC\'s own Package.lua needs package contents and a rig URL',
+        '/catalog/animationsilhouette': 'animation silhouettes need animation assets wired in',
+        '/catalog/animation': 'animation renders need an animation URL and a rig',
+        '/game/thumbnail': 'place thumbnails need a real place to load',
+        '/player/thumbnail-3d': 'this build exposes no model/mesh renderer for 3D objects',
     }
 
     def asset_url(self, asset_id):
@@ -341,33 +359,23 @@ class Renderer:
     def warm_up(self):
         """Pays the first-render cost of Wine/RCC before any user request arrives.
 
-        The website's own render client gives a request ten seconds, so a cold build
-        would otherwise turn every first thumbnail into a timeout. Both steps are
-        reported; a texture render over HTTP is the one real renders depend on.
+        The website's render client allows ten seconds per request, so a cold build
+        would turn the first thumbnail into a timeout. The build's own Model script
+        renders its own avatar rig: no asset upload and no download is involved. A
+        failed warm-up is reported, not hidden, and does not stop the service.
         """
-        steps = {}
-        steady = 0
-        for name, script_type, arguments in (
-                ('texture', 'Image', [f'{self.base_url}{WARMUP_TEXTURE}', 'PNG', 420, 420]),
-                ('rig', 'Model', [WARMUP_RIG, 'PNG', 420, 420, True, True])):
-            started = time.monotonic()
-            try:
-                with self.lock:
-                    image = self.rcc.render(script_type, arguments, 420)
-                steps[name] = {'state': 'ok', 'bytes': len(image),
-                               'seconds': round(time.monotonic() - started, 2)}
-                steady += 1
-            except RenderError as error:
-                steps[name] = {'state': 'failed', 'detail': str(error)[:200],
-                               'seconds': round(time.monotonic() - started, 2)}
-            log('warmup_step', step=name, **steps[name])
-        if steps['texture']['state'] != 'ok':
-            state = 'failed'
-        elif steps['rig']['state'] != 'ok':
-            state = 'partial'
-        else:
-            state = 'ok'
-        self.warmup = {'state': state, 'steps': steps, 'steady': steady}
+        started = time.monotonic()
+        try:
+            with self.lock:
+                image = self.rcc.render(WARMUP_SCRIPT,
+                                        [R6_RIG, 'PNG', 420, 420, self.base_url], 420)
+            self.warmup = {'state': 'ok', 'script': WARMUP_SCRIPT, 'bytes': len(image),
+                           'seconds': round(time.monotonic() - started, 2)}
+        except RenderError as error:
+            self.warmup = {'state': 'failed', 'script': WARMUP_SCRIPT,
+                           'detail': str(error)[:200],
+                           'seconds': round(time.monotonic() - started, 2)}
+        log('warmup', **self.warmup)
 
     def render(self, path, payload, expected_edge=420):
         builder = self.routes.get(path)
@@ -463,11 +471,12 @@ class Handler(BaseHTTPRequestHandler):
         if path not in ('/healthz', '/health'):
             return self.send_json(404, {'success': False, 'message': 'Not found'})
         try:
-            version = self.renderer.rcc.get_version()
-            self.send_json(200, {'success': True, 'message': 'ok', 'rccVersion': version,
+            health = self.renderer.rcc.health()
+            self.send_json(200, {'success': True, 'message': 'ok', 'rcc': health,
                                  'warmup': self.renderer.warmup})
         except RenderError as error:
             self.send_json(503, {'success': False, 'message': str(error),
+                                 'rcc': {'version': self.renderer.rcc.version},
                                  'warmup': self.renderer.warmup})
 
     def do_POST(self):
@@ -492,8 +501,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in self.renderer.unsupported:
             return self.send_json(501, {
                 'success': False,
-                'message': path + ' is not implemented by this renderer yet; '
-                                   'the thumbnail stays pending instead of being faked'})
+                'message': path + ' is not implemented by this renderer yet because '
+                                   + self.renderer.unsupported[path]
+                                   + '; the thumbnail stays pending instead of being faked'})
         try:
             image = self.renderer.render(path, payload)
         except RenderError as error:

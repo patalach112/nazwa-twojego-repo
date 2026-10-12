@@ -29,13 +29,21 @@ for item in /opt/rcc/*; do
 done
 cd /home/rcc/runtime
 
-# Install the thumbnail scripts RCC loads for JSON Thumbnail jobs. The bundled
-# 2020 build ships none, and the runtime copy is ephemeral by design.
-if [ -d /opt/rcc-scripts/thumbnails ]; then
-    mkdir -p internalscripts/thumbnails
-    cp -a /opt/rcc-scripts/thumbnails/. internalscripts/thumbnails/
-    echo "installed $(ls internalscripts/thumbnails | wc -l) thumbnail script files"
+# RCC loads the thumbnail script named after Settings.Type from
+# internalscripts/thumbnails/<Type>.lua. This build ships its own scripts and they
+# are used exactly as shipped - nothing here writes to them. Fail loudly instead of
+# starting a renderer that would answer 502 for a script that is not there.
+missing=""
+for script in $(grep -v '^#' /usr/local/bin/required-thumbnail-scripts.txt); do
+    if [ ! -f "internalscripts/thumbnails/$script.lua" ]; then
+        missing="$missing $script"
+    fi
+done
+if [ -n "$missing" ]; then
+    echo "RCC build is missing thumbnail scripts:$missing" >&2
+    exit 1
 fi
+echo "verified $(grep -c -v '^#' /usr/local/bin/required-thumbnail-scripts.txt) RCC thumbnail scripts"
 
 python3 - <<'PY'
 from pathlib import Path

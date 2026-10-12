@@ -31,33 +31,48 @@ hand.
 ## Request contract
 
 Every route is POST with `Authorization` and a JSON body; a successful answer has
-`data` as base64 of a PNG. The argument list of each route is the varargs list of the
-matching script in `docker/rcc-wine/internalscripts/thumbnails/` and is verified by
-`scripts/test_renderer_contract.py`, so a script and this table cannot drift apart.
+`data` as base64 of a PNG. Each route selects one of **RCC 2020's own thumbnail
+scripts** (`internalscripts/thumbnails/<Settings.Type>.lua`) and passes the arguments
+that script declares in its own first `local ... = ...` line.
+`scripts/test_renderer_contract.py` parses those files and fails when a route and a
+script stop agreeing, and it also fails if any file of ours would shadow one of them.
+No Roblox-authored script is modified, replaced or installed by this repository.
 
-| Route | Body | RCC script | Arguments passed |
+| Route | Body | RCC script | Arguments |
 | --- | --- | --- | --- |
-| `POST /image/image` | `assetId` | `Image.lua` | asset URL, `PNG`, 420, 420 |
-| `POST /catalog/model` | `assetId` | `Model.lua` | asset URL, `PNG`, 420, 420, hide sky, crop |
-| `POST /catalog/hat` | `assetId` | `Model.lua` | same as the model render |
-| `POST /catalog/mesh` | `assetId` | `Mesh.lua` | asset URL, `PNG`, 420, 420 |
-| `POST /catalog/head` | `assetId` | `Head.lua` | asset URL, `PNG`, 420, 420, bundled rig |
-| `POST /image/clothing` | `assetId` | `Clothing.lua` | asset URL, `PNG`, 420, 420, bundled rig |
-| `POST /image/teeshirt` | `assetId` | `TeeShirt.lua` | asset URL, `PNG`, 420, 420, bundled rig |
-| `POST /player/thumbnail` | `userId` | `Avatar.lua` | `PNG`, 420, 420, rig, six body colours, worn clothing URLs, base URL |
-| `POST /player/headshot` | `userId` | `Closeup.lua` | same as the avatar render, framed on the head |
-| `GET /healthz` | - | - | RCC version plus the warm-up report (no secrets) |
+| `POST /image/image` | `assetId` | `Image.lua` | image id, base URL, `PNG`, 420, 420 |
+| `POST /catalog/model` | `assetId` | `Model.lua` | asset URL, `PNG`, 420, 420, base URL |
+| `POST /catalog/hat` | `assetId` | `Hat.lua` | asset URL, `PNG`, 420, 420, base URL |
+| `POST /catalog/mesh` | `assetId` | `Mesh.lua` | asset URL, `PNG`, 420, 420, base URL |
+| `POST /player/thumbnail` | `userId` | `Avatar.lua` (R6) / `Avatar_R15_Action.lua` (R15) | base URL and appearance URL, in that script's own order, `PNG`, 420, 420 |
+| `POST /player/headshot` | `userId` | `Closeup.lua` | base URL, appearance URL, `PNG`, 420, 420, `true`, 40, 60, 0, 0 |
+| `GET /healthz` | - | - | RCC version, how long ago RCC last answered, whether a render is in progress, and the warm-up report |
+
+The closeup zooms are the values this repository's own `game-renderer/scripts/Closeup.json`
+recorded; `Avatar.lua` and `Avatar_R15_Action.lua` disagree about the first two
+arguments (the shipped files are the authority and the renderer follows each one).
+
+Avatar and headshot renders hand RCC the account's appearance document at
+`<WEBSITE_BASE_URL>/v1.1/avatar-fetch?userId=`, which is the same document the game
+server uses; RCC's own scripts then load the character. That path is *attempted*, not
+claimed: the integration test reports what a real call returned.
 
 Asset URLs are built from configured values only
 (`<WEBSITE_BASE_URL>/asset/?id=<assetId>`), never from the request body, so the renderer
-cannot be made to fetch an arbitrary URL. Avatar requests read the
-account's appearance through `GET http://website:5000/v1.1/avatar-fetch?userId=`, which
-is the same document the game server uses.
+cannot be made to fetch an arbitrary URL.
 
-`/catalog/package`, `/catalog/bodypart`, `/catalog/animationsilhouette`,
-`/catalog/animation`, `/game/thumbnail` and `/player/thumbnail-3d` answer `501`: this
-renderer does not implement them yet, and returning a substitute image would put a
-wrong picture into the catalog.
+These endpoints answer `501` with the concrete missing piece, so the thumbnail stays
+pending instead of being faked:
+
+| Route | Why it is not answered yet |
+| --- | --- |
+| `/image/clothing` | RCC's `Shirt.lua`/`Pants.lua` load a mannequin asset; this stack has no local one |
+| `/image/teeshirt` | this build ships no TeeShirt thumbnail script |
+| `/catalog/head` | RCC's `Head.lua` needs the same mannequin asset |
+| `/catalog/bodypart`, `/catalog/package` | RCC's scripts need a rig URL this stack does not serve |
+| `/catalog/animationsilhouette`, `/catalog/animation` | animation assets are not wired in |
+| `/game/thumbnail` | place thumbnails need a real place to load |
+| `/player/thumbnail-3d` | this build exposes no model/mesh renderer for 3D objects |
 
 ## Environment
 
@@ -72,6 +87,7 @@ wrong picture into the catalog.
 | `RENDERER_JOB_TIMEOUT` | `120` | seconds a single RCC job may run |
 | `RENDERER_QUERY_TIMEOUT` | `10` | seconds for a SOAP query such as `GetVersion` |
 | `RENDERER_MAX_RETRIES` | `1` | additional attempts after a failed render (bounded) |
+| `RENDERER_HEALTH_STALE` | `120` | seconds a recent RCC answer keeps `/healthz` green |
 
 ## Deliberate limits
 
@@ -88,17 +104,24 @@ wrong picture into the catalog.
   `no-new-privileges`, and no Docker socket; RCC gets no privileges either and is
   reachable only from this service on the compose network.
 * The website's own client gives a render request ten seconds
-  (`RenderingHandler`'s `HttpClient.Timeout`). The startup warm-up pays Wine's and
-  RCC's first-render cost before user requests arrive; a render that still exceeds the
+  (`RenderingHandler`'s `HttpClient.Timeout`). The startup warm-up renders the build's
+  own avatar rig through RCC's own `Model.lua`, which pays Wine's and RCC's
+  first-render cost before user requests arrive; a render that still exceeds the
   ten-second budget fails in the website's log and the thumbnail stays pending instead
   of being stored wrong. Longer renders need a website-side change and are not
   pretended to work here.
+* `/healthz` reports RCC as healthy while RCC answered anything within
+  `RENDERER_HEALTH_STALE` seconds (120 by default). A long render makes RCC slow to
+  answer a `GetVersion` query, and a health check that ignored that would flap in the
+  middle of a job; a service that has not heard from RCC at all is still reported
+  unhealthy and the answer is `503`.
 
 ## What is not proven
 
 `scripts/test_local_renderer.py` covers image assets (two different textures, checked
-pixel by pixel) and model assets through the real website. The avatar, headshot,
-clothing, head and mesh routes are implemented but **not yet covered by that test**, so
-they are unproven. Placement/game thumbnails, animations, packages, body parts and the
-`-thumbnail3d` objects are unimplemented on purpose. No client-visible claim is made
+pixel by pixel) and model assets through the real website, and it reports the result of
+a real avatar render attempt instead of assuming one. The hat, mesh, headshot and
+clothing routes are implemented (or refused with a reason) but **not covered by that
+test**, so they are unproven. Place thumbnails, animations, packages, body parts and
+the `-thumbnail3d` objects are unimplemented on purpose. No client-visible claim is made
 about any of them.

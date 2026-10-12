@@ -19,6 +19,7 @@ profile:
    implement, are refused instead of returning a picture.
 """
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -199,6 +200,14 @@ def thumbnail_file_for_key(thumbnails_directory, key):
     return path
 
 
+def png_constants(data):
+    """(format, width, height) without decoding the pixels; None when not a PNG."""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) < 24 or data[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    return "PNG", width, height
+
+
 def wait_for_renderer_authorization(authorization, timeout=90):
     """Waits until the renderer picks the enabled value up from the mounted config.
 
@@ -286,9 +295,13 @@ def main():
         # 1. Health is RCC's own answer, not an open TCP port.
         with urllib.request.urlopen(RENDERER_URL + "/healthz", timeout=30) as response:
             health = json.loads(response.read())
-        if not health.get("success") or not health.get("rccVersion"):
+        rcc = health.get("rcc") or {}
+        if not health.get("success") or not rcc.get("version"):
             fail(f"the renderer did not report a working RCC: {health}")
-        notice(f"the renderer reaches RCC {health['rccVersion']}")
+        if rcc.get("lastContactSeconds") is None or rcc["lastContactSeconds"] > 60:
+            fail(f"the renderer has not spoken to RCC recently: {rcc}")
+        notice(f"the renderer reaches RCC {rcc['version']} "
+               f"(last contact {rcc['lastContactSeconds']}s ago, busy={rcc.get('busy')})")
 
         # The website's own render client gives a request ten seconds, so the first
         # render must not happen inside a user request. Wait for the startup warm-up
@@ -301,11 +314,9 @@ def main():
                 warmup = json.loads(response.read()).get("warmup", {})
         if warmup.get("state") in (None, "pending"):
             fail(f"the renderer never finished its startup warm-up within {WARMUP_TIMEOUT}s: {warmup}")
-        if warmup.get("state") == "failed":
-            fail(f"the renderer cannot render at all: {warmup}")
-        if warmup.get("state") == "partial":
-            notice(f"the HTTP texture warm-up works but the bundled rig warm-up did not: {warmup}")
-        notice(f"the renderer warmed up before user requests: {warmup}")
+        # The warm-up only pays Wine's first-render cost; whether it succeeded is
+        # reported here and the real renders below decide whether rendering works.
+        notice(f"the renderer warm-up reports {warmup}")
 
         # 5. Refusals first: they must not need a working render.
         status, body = renderer_post("/image/image", {"assetId": 1}, authorization=None)
@@ -317,7 +328,10 @@ def main():
         status, body = renderer_post("/game/thumbnail", {"placeId": 1}, authorization=authorization)
         if status != 501 or "not implemented" not in body.get("message", ""):
             fail(f"an unimplemented endpoint returned HTTP {status}: {body}")
-        notice("the renderer refuses missing secrets and unimplemented endpoints")
+        status, body = renderer_post("/image/clothing", {"assetId": 1}, authorization=authorization)
+        if status != 501 or "mannequin" not in body.get("message", ""):
+            fail(f"clothing must stay pending with a concrete reason, got HTTP {status}: {body}")
+        notice("the renderer refuses missing secrets and names what an unimplemented endpoint needs")
 
         # 2. Real image assets: two different uploaded textures must produce two
         #    different renders, each showing its own colour. That is what separates a
@@ -380,6 +394,26 @@ def main():
             fail("the model thumbnail is the same file as the texture thumbnail")
         notice(f"model asset {model_id} rendered its own 3D thumbnail, stored as {key} "
                f"(awaiting approval {moderation}) and served at {model_entry['imageUrl']}")
+
+        # 3b. The avatar path is attempted and reported, because RCC's own Avatar.lua
+        #     loads a real character through the website. It is not claimed to work
+        #     unless it returns a real image, and it never returns a substitute.
+        status, body = renderer_post("/player/thumbnail", {"userId": owner_id},
+                                     authorization=authorization, timeout=RENDER_TIMEOUT)
+        if status == 200 and body.get("success"):
+            avatar = base64.b64decode(body["data"])
+            details = png_constants(avatar)
+            if details is None:
+                fail("the avatar render did not return a decodable PNG")
+            if details[1] < THUMBNAIL_EDGE or details[2] < THUMBNAIL_EDGE:
+                fail(f"the avatar render came back as {details[1]}x{details[2]}, which is a placeholder")
+            notice(f"RCC's own Avatar script rendered user {owner_id} through the website "
+                   f"({details[1]}x{details[2]}, {len(avatar)} bytes)")
+        elif status in (501, 502):
+            notice(f"the avatar render is not working yet and stayed pending: "
+                   f"HTTP {status} - {body.get('message')}")
+        else:
+            fail(f"the avatar render returned HTTP {status}: {body}")
 
         # 4. No renderer: the asset still works and no thumbnail is faked.
         run_stack("--profile", "renderer", "stop", "renderer")
