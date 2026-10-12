@@ -29,6 +29,14 @@ for item in /opt/rcc/*; do
 done
 cd /home/rcc/runtime
 
+# Install the thumbnail scripts RCC loads for JSON Thumbnail jobs. The bundled
+# 2020 build ships none, and the runtime copy is ephemeral by design.
+if [ -d /opt/rcc-scripts/thumbnails ]; then
+    mkdir -p internalscripts/thumbnails
+    cp -a /opt/rcc-scripts/thumbnails/. internalscripts/thumbnails/
+    echo "installed $(ls internalscripts/thumbnails | wc -l) thumbnail script files"
+fi
+
 python3 - <<'PY'
 from pathlib import Path
 import os, struct, urllib.parse, xml.etree.ElementTree as ET

@@ -19,6 +19,9 @@ ENV WINEARCH=win32 \
 
 COPY entrypoint.sh run-wine.sh healthcheck.py lua_probe.py json_probe.py json_probe.lua \
     thumbnail_probe.py thumbnail_probe.lua /usr/local/bin/
+# Thumbnail scripts this build does not ship; the entrypoint installs them into
+# the ephemeral runtime copy so the mounted build stays untouched.
+COPY internalscripts/thumbnails /opt/rcc-scripts/thumbnails
 RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/run-wine.sh \
     && mkdir /opt/rcc \
     && chown rcc:rcc /opt/rcc

@@ -113,6 +113,17 @@ python3 scripts/test_rcc_wine.py
 RCC_WINE_YEARS=2016 python3 scripts/test_rcc_wine.py
 ```
 
+## Thumbnail scripts
+
+The bundled 2020 build ships no thumbnail scripts, while a JSON `Thumbnail` job needs
+`internalscripts/thumbnails/<Settings.Type>.lua`. `docker/rcc-wine/internalscripts/thumbnails`
+supplies them and the entrypoint installs the set into the ephemeral runtime copy on
+every start, so the mounted build stays untouched and rebuilding the image is enough to
+update them. They are written for this build's contract - `Settings.Arguments` arrives
+as varargs - and each file lists its arguments on its first line; the renderer service
+in `docker/renderer/` builds exactly those arguments and
+`scripts/test_renderer_contract.py` fails when the two disagree.
+
 ## Other executables
 
 The four RCC executables have PE machine type `0x14c` (32-bit x86). Several

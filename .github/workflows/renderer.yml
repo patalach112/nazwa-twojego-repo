@@ -1,0 +1,65 @@
+name: Local renderer
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - docker/renderer/**
+      - docker/rcc-wine/**
+      - docker-compose.local.yml
+      - scripts/local-stack.sh
+      - scripts/configure_local_docker.py
+      - scripts/test_local_renderer.py
+      - scripts/test_renderer_contract.py
+      - scripts/renderer_diagnostics.py
+      - .github/workflows/renderer.yml
+  push:
+    branches: [master]
+    paths:
+      - docker/renderer/**
+      - docker/rcc-wine/**
+      - docker-compose.local.yml
+      - scripts/local-stack.sh
+      - scripts/configure_local_docker.py
+      - scripts/test_local_renderer.py
+      - scripts/test_renderer_contract.py
+      - scripts/renderer_diagnostics.py
+      - .github/workflows/renderer.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  renderer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the renderer, its scripts and the Lua contract without Docker
+        run: |
+          python3 -m py_compile docker/renderer/renderer.py scripts/test_local_renderer.py \
+            scripts/test_renderer_contract.py scripts/renderer_diagnostics.py
+          python3 -m unittest discover -s scripts -p test_renderer_contract.py -v
+          python3 -m unittest discover -s scripts -p test_local_docker.py
+      - name: Generate disposable real database configs
+        run: python3 scripts/configure_local_docker.py --database-name marine_renderer_tests --project-name marine-renderer-tests --test
+      - name: Build and start the website together with RCC under Wine and the renderer
+        run: ./scripts/local-stack.sh --profile renderer up --build -d > "$RUNNER_TEMP/renderer-build.log" 2>&1
+      - name: Render real thumbnails through the website, the renderer and RCC 2020
+        env:
+          RENDERER_TEST: '1'
+          PYTHONUNBUFFERED: '1'
+        run: |
+          set -o pipefail
+          python3 scripts/test_local_renderer.py 2>&1 | tee "$RUNNER_TEMP/renderer-test.log"
+      - name: Annotate renderer failures without exposing private configuration
+        if: failure()
+        env:
+          RENDERER_TEST_LOG: ${{ runner.temp }}/renderer-test.log
+        run: |
+          head -60 "$RUNNER_TEMP/renderer-build.log" || true
+          python3 scripts/renderer_diagnostics.py
+      - name: Stop disposable containers
+        if: always()
+        run: ./scripts/local-stack.sh down

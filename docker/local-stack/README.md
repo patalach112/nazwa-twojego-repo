@@ -136,20 +136,49 @@ python3 scripts/configure_local_docker.py \
 ASSET_IMPORT_TEST=1 python3 scripts/test_asset_import.py
 ```
 
-It refuses to run against a non-`*_tests` configuration. Rendering, avatar
-thumbnails, the remaining panel screens that need a renderer and game joins are
-**not** covered by this check; a green run proves the local import/delivery path
-and that the panel is served and gated, not that rendering works.
+It refuses to run against a non-`*_tests` configuration. Avatar thumbnails, the
+remaining panel screens that need a renderer and game joins are **not** covered by
+this check; a green run proves the local import/delivery path and that the panel is
+served and gated, not that rendering works.
+
+## Optional renderer profile
+
+Rendering stays off until it is enabled on purpose. `scripts/configure_local_docker.py
+--enable-renderer` writes `Render:BaseUrl = http://renderer:3521/` into
+`docker/local/website.json` and reuses the existing `RccAuthorization` value as
+`Render:Authorization` (no new secret, nothing rotated), then:
+
+```bash
+./scripts/local-stack.sh --profile renderer up -d --build
+./scripts/local-stack.sh restart website
+```
+
+The `rcc-render` service runs the vendored RCC 2020 build from
+`RCCService/RCCService2020` under Wine with the thumbnail scripts from
+`docker/rcc-wine/internalscripts/thumbnails`; the `renderer` service turns the
+website's HTTP render requests into JSON `Thumbnail` jobs and returns real base64
+PNGs (details and limits in `docker/renderer/README.md`). Neither service is
+published into the compose network beyond `renderer:3521`, RCC has no published
+port, and both run without privileges. Switching the profile off
+(`./scripts/local-stack.sh --profile renderer down`) returns the stack to pending
+thumbnails; uploads, delivery and accounts never wait for the renderer.
+
+`scripts/test_local_renderer.py` proves the whole path against a disposable `*_tests`
+stack: uploads through the real admin API, the website's own render
+requests, RCC under Wine, the 420x420 PNG in `docker/local/data/thumbnails/`, the
+served thumbnail URL, a model render that differs from the texture render, refusals
+for a missing Authorization value and for unimplemented endpoints, and that stopped
+rendering leaves the asset usable with a pending thumbnail.
 
 ## Still outside this stack
 
 There is no operational RCC launcher/proxy or verified real game join. The
 experimental RCC Wine compose file is separate. A controlled 2020 JSON
 `ExecuteScript` job and one real 420x420 PNG thumbnail render of two different
-DataModels passed under Wine (`RCC Wine smoke`); `GameServer` mode, avatar
-renders and client joins remain untested. The website still has no renderer
-service in front of RCC, so disabled rendering keeps producing pending
-thumbnails rather than a rendered avatar.
+DataModels passed under Wine (`RCC Wine smoke`); `GameServer` mode and client joins
+remain untested. With the optional `renderer` profile above, the website does have a
+renderer service in front of RCC for local runs, and leaving it off keeps producing
+pending thumbnails rather than a rendered avatar.
 Chat, trade/economy workflows, uploads/Go validation, account recovery and 2FA
 end-to-end behavior are not established by the basic account test.
 

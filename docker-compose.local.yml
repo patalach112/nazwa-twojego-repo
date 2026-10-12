@@ -89,6 +89,73 @@ services:
       start_period: 15s
     stop_grace_period: 15s
 
+  # Optional renderer stack: enable it with
+  #   ./scripts/local-stack.sh --profile renderer up -d
+  # and put http://renderer:3521/ into Render:BaseUrl of docker/local/website.json
+  # (scripts/configure_local_docker.py --enable-renderer writes exactly that).
+  # Without the profile, rendering stays disabled and thumbnails stay pending.
+  rcc-render:
+    profiles: [renderer]
+    # Same image as the standalone RCC experiment, but wired to the local website and
+    # reachable only from the renderer service on the compose network.
+    build: ./docker/rcc-wine
+    init: false # The image already uses tini with process-group signal forwarding.
+    environment:
+      RCC_BASE_URL: http://website:5000
+      RCC_PORT: "64989"
+      RCC_EXE: ${RCC_EXE:-RCCService.exe}
+      RCC_SOAP_NAMESPACE: ${RCC_SOAP_NAMESPACE:-http://silrev.biz/}
+    volumes:
+      - ${RCC_DIRECTORY:-./RCCService/RCCService2020}:/opt/rcc:ro
+    # No published port: only the renderer service talks to RCC, over the compose network.
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /home/rcc:rw,nosuid,nodev,uid=1000,gid=1000,size=2g
+      - /tmp:rw,nosuid,nodev,size=256m
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 512
+    stop_grace_period: 15s
+
+  renderer:
+    profiles: [renderer]
+    build:
+      context: docker/renderer
+    init: true
+    depends_on:
+      website:
+        condition: service_healthy
+      # RCC answers SOAP before the renderer is started, so the startup warm-up
+      # never races a build that is still bringing its service up.
+      rcc-render:
+        condition: service_healthy
+    environment:
+      RENDERER_PORT: "3521"
+      # RCC under Wine needs its first render to warm up; the job timeout is generous
+      # but still bounded, and CloseJob always runs.
+      RENDERER_JOB_TIMEOUT: ${RENDERER_JOB_TIMEOUT:-120}
+      RENDERER_QUERY_TIMEOUT: ${RENDERER_QUERY_TIMEOUT:-10}
+      RCC_SOAP_URL: http://rcc-render:64989/
+      RCC_SOAP_NAMESPACE: ${RCC_SOAP_NAMESPACE:-http://silrev.biz/}
+      WEBSITE_BASE_URL: http://website:5000
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - '127.0.0.1:${RENDERER_PORT:-3521}:3521'
+    volumes:
+      # The renderer reuses the website's own Render:Authorization value instead of
+      # introducing and rotating another secret. Requires docker/local/website.json,
+      # which the first stack start creates.
+      - ./docker/local/website.json:/config/website.json:ro
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=32m
+    mem_limit: 512m
+    stop_grace_period: 20s
+
 volumes:
   local-postgres:
   local-redis:

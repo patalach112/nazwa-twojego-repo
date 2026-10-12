@@ -92,6 +92,21 @@ def configure(directory, public_url=None, database=None, project=None, frontend_
     return manifest
 
 
+def enable_renderer(website, base_url='http://renderer:3521/'):
+    """Points an existing local website config at the local renderer service.
+
+    The authorization value is the website's own existing ``RccAuthorization``, so
+    nothing is rotated and no second secret has to be kept in sync. Returns the
+    values it set, so callers can log them without printing the secret itself.
+    """
+    parsed = parse_origin(base_url)
+    authorization = website.get('RccAuthorization')
+    if not authorization:
+        raise ValueError('The website config has no RccAuthorization value to reuse for the renderer')
+    website['Render'] = {'BaseUrl': parsed + '/', 'Authorization': authorization}
+    return {'baseUrl': parsed + '/', 'authorization': 'reused from RccAuthorization'}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--directory', type=Path, default=ROOT / 'docker/local')
@@ -101,13 +116,34 @@ def main():
     parser.add_argument('--frontend-port', type=int)
     parser.add_argument('--backend-port', type=int)
     parser.add_argument('--test', action='store_true', help='Opt into a disposable *_tests database for browser tests')
+    parser.add_argument('--enable-renderer', action='store_true',
+                        help='Point an existing website config at the local renderer (no secret rotation)')
+    parser.add_argument('--renderer-base-url', default='http://renderer:3521/',
+                        help='Base URL written into Render:BaseUrl when enabling the renderer')
     args = parser.parse_args()
     try:
-        configure(args.directory, args.public_base_url, args.database_name, args.project_name,
-                  args.frontend_port, args.backend_port, args.test)
+        if args.enable_renderer:
+            website_path = args.directory / 'website.json'
+            if not website_path.is_file():
+                raise ValueError('No local website config yet; start the stack once, then enable the renderer')
+            website = json.loads(website_path.read_text())
+            result = enable_renderer(website, args.renderer_base_url)
+            # Rewrite in place: the website container bind-mounts this exact file,
+            # so replacing the inode would leave the running container on the old file.
+            with open(website_path, 'r+b') as stream:
+                stream.seek(0)
+                stream.write(json.dumps(website, indent=2).encode() + b'\n')
+                stream.truncate()
+            os.chmod(website_path, 0o600)
+            print('Renderer enabled at ' + result['baseUrl'] + '; authorization ' + result['authorization'] + '.')
+            print('Start it with: ./scripts/local-stack.sh --profile renderer up -d, then restart the website.')
+        else:
+            configure(args.directory, args.public_base_url, args.database_name, args.project_name,
+                      args.frontend_port, args.backend_port, args.test)
     except (ValueError, OSError) as error:
         parser.exit(1, str(error) + '\n')
-    print('Local Docker configs are ready; existing configs and credentials were preserved.')
+    if not args.enable_renderer:
+        print('Local Docker configs are ready; existing configs and credentials were preserved.')
 
 
 if __name__ == '__main__':
