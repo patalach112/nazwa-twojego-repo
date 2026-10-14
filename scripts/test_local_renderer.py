@@ -17,8 +17,9 @@ profile:
    recorded as awaiting staff approval in the database (asserted, not hidden),
    described by the catalogue details and product info APIs, reported Completed with its
    stored URL by the modern thumbnail API, served to an anonymous browser from the page
-   origin, and reached through the site's own image handler (/thumbs/asset.ashx),
-   redirect chain and bytes included,
+   origin, reached through the site's own image handler (/thumbs/asset.ashx), and gated
+   by staff moderation (declining switches to Blocked and /img/blocked.png, approving
+   restores the stored 3D render), redirect chain and bytes included,
 4. an account's own avatar is rendered through the website itself: posting to the
    website's redraw endpoint makes it store an avatar thumbnail and a headshot under the
    configured thumbnail directory, report them through the same thumbnail API the
@@ -878,10 +879,50 @@ def main():
         if model_handler[1] != model_path.read_bytes():
             fail(f"/thumbs/asset.ashx ended on {len(model_handler[1])} bytes, not the stored "
                  f"{len(model_path.read_bytes())} bytes of the model thumbnail")
+
+        # Staff moderation life-cycle (frontend /admin/asset-approval and
+        # /admin-api/api/asset/moderate): declining the asset must switch the modern
+        # thumbnail API to Blocked, send /thumbs/asset.ashx to /img/blocked.png, and
+        # refuse an unauthenticated request. Re-approving restores the 3D render.
+        status, _, body = Client().post_json(
+            f"{backend}/admin-api/api/asset/moderate",
+            {"assetId": model_id, "isApproved": False, "is18Plus": False})
+        if status != 401:
+            fail(f"unauthenticated asset/moderate answered HTTP {status}, expected 401")
+
+        status, _, body = owner.post_json(
+            f"{backend}/admin-api/api/asset/moderate",
+            {"assetId": model_id, "isApproved": False, "is18Plus": False})
+        if status not in (200, 204):
+            fail(f"asset/moderate decline answered HTTP {status}: {body[:200]!r}")
+        declined_entry = catalog_asset_thumbnail(owner, backend, model_id)
+        if declined_entry.get("state") != "Blocked" or "blocked.png" not in (declined_entry.get("imageUrl") or ""):
+            fail(f"declined asset thumbnail API returned {declined_entry}, expected Blocked /img/blocked.png")
+        status, headers, body = Client().get(f"{frontend}/thumbs/asset.ashx?assetId={model_id}")
+        if status not in (301, 302, 303, 307, 308) or "blocked.png" not in (headers.get("Location") or ""):
+            fail(f"declined asset handler answered HTTP {status} with location {headers.get('Location')}")
+
+        status, _, body = owner.post_json(
+            f"{backend}/admin-api/api/asset/moderate",
+            {"assetId": model_id, "isApproved": True, "is18Plus": False})
+        if status not in (200, 204):
+            fail(f"asset/moderate approve answered HTTP {status}: {body[:200]!r}")
+        reapproved_entry = catalog_asset_thumbnail(owner, backend, model_id)
+        if reapproved_entry.get("state") != "Completed" or \
+                urllib.parse.urlsplit(reapproved_entry.get("imageUrl") or "").path != \
+                urllib.parse.urlsplit(model_entry["imageUrl"]).path:
+            fail(f"re-approved asset thumbnail API returned {reapproved_entry}, "
+                 f"expected Completed {model_entry['imageUrl']}")
+        reapproved_handler = browser_image(owner, frontend, f"/thumbs/asset.ashx?assetId={model_id}",
+                                           f"the re-approved asset image handler for asset {model_id}")
+        if reapproved_handler[1] != model_path.read_bytes():
+            fail("the re-approved asset handler did not deliver the stored 3D render bytes")
+
         notice(f"model asset {model_id} rendered its own 3D thumbnail, stored as {key} "
                f"(awaiting approval {moderation}), served at {model_entry['imageUrl']}, "
-               f"described by the catalogue details and product info APIs, and reachable "
-               f"through both /apisite/thumbnails/v1/assets and /thumbs/asset.ashx for a page's own <img>")
+               f"described by catalogue details and product info, gated by staff moderation "
+               f"(Blocked when declined, restored when approved), and reachable through both "
+               f"the thumbnail API and /thumbs/asset.ashx for a page's own <img>")
 
         # 3b. The account's own avatar, the way the browser gets it: the website's
         #     redraw endpoint renders a headshot and the avatar through RenderingHandler,

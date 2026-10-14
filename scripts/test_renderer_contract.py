@@ -679,6 +679,16 @@ class WebsiteThumbnailContractTest(unittest.TestCase):
         self.assertIn('[HttpGet("marketplace/productinfo")]', controller)
         self.assertIn('services.assets.GetAssetCatalogInfo(assetId)', controller)
 
+    def test_declined_assets_are_served_as_blocked_png(self):
+        service = self.source('Roblox/Roblox.Services/Thumbnails.cs')
+        self.assertIn('c.imageUrl = "/img/blocked.png";', service)
+        self.assertIn('ThumbnailState.Blocked', service)
+
+    def test_staff_moderation_route_updates_asset_moderation_status(self):
+        api = self.source('Roblox/Roblox.Website/Controllers/Internal/AdminApi.cs')
+        self.assertIn('[HttpPost("asset/moderate"), StaffFilter(Access.SetAssetModerationStatus)]', api)
+        self.assertIn('ModerationStatus.ReviewApproved : ModerationStatus.Declined', api)
+
 
 class ContainerLayoutTest(unittest.TestCase):
     """RCC and the renderer must stay in one container over loopback."""

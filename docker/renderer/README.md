@@ -209,7 +209,10 @@ item the model render belongs to is asked for through the catalogue details API 
 page calls, the product info API the item page SSR loads, and the modern thumbnail API
 the frontend store queries (`/apisite/thumbnails/v1/assets`), with the resulting image
 URL fetched anonymously from the page origin, so an item whose page could not describe
-or show it fails too. The avatar image has to look like a character
+or show it fails too. The staff moderation life-cycle is asserted on the same item:
+declining via `/admin-api/api/asset/moderate` switches the thumbnail API to Blocked and
+points the image handler at `/img/blocked.png`, while re-approving restores the stored
+3D render bytes. The avatar image has to look like a character
 and not like a background, and the pixels are re-checked after the website's own resize.
 The headshot route is covered through the avatar step, which asserts the stored
 150x150 file. The hat and mesh routes are implemented and clothing is refused with a
