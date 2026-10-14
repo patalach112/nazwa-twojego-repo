@@ -4,9 +4,11 @@ body {
   color: #e0e0e0;
 }
 
-.feather {
+.feather, svg.feather {
   width: 16px;
   height: 16px;
+  max-width: 16px;
+  max-height: 16px;
   vertical-align: text-bottom;
 }
 
