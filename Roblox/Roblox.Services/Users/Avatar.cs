@@ -320,6 +320,31 @@ public class AvatarService : ServiceBase, IService {
                 if (hasEntry.moderationStatus != ModerationStatus.ReviewApproved) return false;
                 return true;
             }).ToList();
+
+            // Deduplicate single-slot items (keep the latest worn item for Shirt, Pants, etc.)
+            var singleSlotTypes = new HashSet<Type>
+            {
+                Type.Shirt, Type.Pants, Type.TeeShirt, Type.Face, Type.Head,
+                Type.Torso, Type.LeftArm, Type.RightArm, Type.LeftLeg, Type.RightLeg
+            };
+            var seenSlots = new HashSet<Type>();
+            var deduplicatedIds = new List<long>();
+            for (int i = assetIds.Count - 1; i >= 0; i--)
+            {
+                var id = assetIds[i];
+                var entry = safeModList.Find(v => v.assetId == id);
+                if (entry != null && singleSlotTypes.Contains(entry.assetType))
+                {
+                    if (seenSlots.Add(entry.assetType))
+                        deduplicatedIds.Add(id);
+                }
+                else
+                {
+                    deduplicatedIds.Add(id);
+                }
+            }
+            deduplicatedIds.Reverse();
+            assetIds = deduplicatedIds;
             // Finally, confirm user actually owns each assetId
             // goodAssetIds is a list of assets the user owns
             var goodAssetIds = new List<long>();

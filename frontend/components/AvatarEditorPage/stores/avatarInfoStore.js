@@ -217,18 +217,9 @@ const AvatarInfoStore = createContainer(() => {
         let newAsset = modifiedAsset;
         setModifiedAsset(null);
         
-        // Limiting
+        // Limiting validation for accessories and emotes
         if (!IsNegative(newAsset.assetId)) {
-            if (AssetTypeCategory.LimitToOne.includes(newAsset.assetType)) {
-                for (const assetType of AssetTypeCategory.LimitToOne) {
-                    let onlyOneAllowed = wearingAssets.filter(/** @param {WearingAsset} asset */ asset => {
-                        return asset.assetType === assetType && newAsset.assetType === assetType;
-                    });
-                    if (onlyOneAllowed.length > 0) {
-                        setWearingAssets(wearingAssets.filter(asset => asset.assetType !== assetType));
-                    }
-                }
-            } else if (AssetTypeCategory.Accessories.includes(newAsset.assetType)) {
+            if (AssetTypeCategory.Accessories.includes(newAsset.assetType)) {
                 let accessories = wearingAssets.filter(/** @param {WearingAsset} asset */ asset =>
                     AssetTypeCategory.Accessories.includes(asset.assetType)
                 );
@@ -248,11 +239,16 @@ const AvatarInfoStore = createContainer(() => {
         }
         
         setWearingAssets(prev => {
+            let current = prev ? [...prev] : [];
             let updated;
             if (IsNegative(newAsset.assetId)) {
-                updated = prev.filter(v => v.assetId !== newAsset.assetId * -1);
+                updated = current.filter(v => v.assetId !== newAsset.assetId * -1);
             } else {
-                updated = [...prev, newAsset];
+                // If the item is LimitToOne (Shirt, Pants, etc.), remove any currently worn item of the same assetType
+                if (AssetTypeCategory.LimitToOne.includes(newAsset.assetType)) {
+                    current = current.filter(asset => asset.assetType !== newAsset.assetType);
+                }
+                updated = [...current, newAsset];
             }
             
             (async () => {
