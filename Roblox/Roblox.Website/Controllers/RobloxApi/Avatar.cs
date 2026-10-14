@@ -103,8 +103,18 @@ public class AvatarRBX : ControllerBase
             BodyType = avatar.scales.bodyType
         };
         
+        var isAccessory = new Func<Models.Assets.Type, bool>(t => t is
+            Models.Assets.Type.Hat or
+            Models.Assets.Type.HairAccessory or
+            Models.Assets.Type.FaceAccessory or
+            Models.Assets.Type.NeckAccessory or
+            Models.Assets.Type.ShoulderAccessory or
+            Models.Assets.Type.FrontAccessory or
+            Models.Assets.Type.BackAccessory or
+            Models.Assets.Type.WaistAccessory);
+
         equippedGearVersionIds.AddRange(assetInfo.Where(d => d.assetType == Models.Assets.Type.Gear).Select(d => d.id));
-        accessoryVersionIds.AddRange(assetInfo.Where(d => (d.assetType != Models.Assets.Type.Gear && placeId != 0) && d.assetType != Models.Assets.Type.EmoteAnimation).Select(d => d.id));
+        accessoryVersionIds.AddRange(assetInfo.Where(d => isAccessory(d.assetType)).Select(d => d.id));
         if (placeId != 0)
         {
             equippedGearVersionIds = new List<long>();
@@ -124,6 +134,8 @@ public class AvatarRBX : ControllerBase
                 g => g.First().id 
             );
 
+        var assetBaseUrl = Roblox.Libraries.Assets.ContentFormatters.GetAssetBaseUrl();
+
         var result = new 
         {
             resolvedAvatarType = avatar.avatarType.ToString(),
@@ -141,7 +153,7 @@ public class AvatarRBX : ControllerBase
             animationAssetIds = animationAssetIds,
             playerAvatarType = avatar.avatarType.ToString(),
             scales,
-            bodyColorsUrl = $"{Configuration.BaseUrl}/Asset/BodyColors.ashx?userId={userId}",
+            bodyColorsUrl = $"{assetBaseUrl}/Asset/BodyColors.ashx?userId={userId}",
             bodyColors,
             emotes = assetInfo.Where(c => c.assetType == Models.Assets.Type.EmoteAnimation).Select(c => new
             {
