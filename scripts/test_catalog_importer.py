@@ -114,6 +114,7 @@ class CatalogImporterTests(unittest.TestCase):
         success = client.login("test2", "qsx12345")
         self.assertTrue(success)
         self.assertEqual(client.session_cookie, "mocked_jwt_token_12345")
+        self.assertEqual(client.user_id, 2)
 
     def test_login_fallback_accountlogin(self):
         client = CatalogClient(base_url="http://localhost:5000")

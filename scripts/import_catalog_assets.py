@@ -130,6 +130,8 @@ class CatalogClient:
         self.base_url = base_url.rstrip("/")
         self.session_cookie = session_cookie
         self.csrf_token = None
+        self.user_id = None
+        self.username = None
         self.opener = urllib.request.build_opener(NoRedirect())
 
     def request(self, method, path, data=None, headers=None):
@@ -192,16 +194,16 @@ class CatalogClient:
             last_status = status
 
             if status == 200:
-                user_id = None
                 try:
                     resp_json = json.loads(body.decode("utf-8", "replace"))
                     user_info = resp_json.get("UserInfo") or resp_json.get("user") or {}
-                    user_id = user_info.get("UserID") or user_info.get("id")
+                    self.user_id = user_info.get("UserID") or user_info.get("id")
+                    self.username = user_info.get("UserName") or user_info.get("name") or username
                 except Exception:
                     pass
 
                 if self.session_cookie:
-                    extra = f" (User ID: {user_id})" if user_id else ""
+                    extra = f" (User ID: {self.user_id})" if self.user_id else ""
                     print(f"[+] Login successful via {endpoint}! Logged in as '{username}'{extra}.")
                     return True
 
@@ -267,6 +269,14 @@ class CatalogClient:
             data=body,
             headers={"Content-Type": content_type},
         )
+        if status in (401, 403):
+            uid_hint = f" (User ID: {self.user_id})" if self.user_id else ""
+            raise RuntimeError(
+                f"Permission denied creating clothing '{name}' (HTTP {status}). "
+                f"Your account{uid_hint} is not authorized for staff actions. "
+                f"Add your user ID to 'OwnerUserId' in docker/local/website.json and restart the website: "
+                f"./scripts/local-stack.sh restart website"
+            )
         if status != 200:
             raise RuntimeError(f"Failed to create clothing '{name}' (HTTP {status}): {resp_body[:300].decode('utf-8', 'replace')}")
 
@@ -304,6 +314,15 @@ class CatalogClient:
             asset_id = data.get("assetId")
             print(f"[+] Successfully migrated item #{roblox_asset_id} -> Local Asset ID: {asset_id}")
             return asset_id
+
+        if status in (401, 403) and status2 in (401, 403):
+            uid_hint = f" (User ID: {self.user_id})" if self.user_id else ""
+            raise RuntimeError(
+                f"Permission denied migrating asset #{roblox_asset_id} (HTTP {status}). "
+                f"Your account{uid_hint} is not authorized for staff actions. "
+                f"Add your user ID to 'OwnerUserId' in docker/local/website.json and restart the website: "
+                f"./scripts/local-stack.sh restart website"
+            )
 
         raise RuntimeError(
             f"Failed to copy Roblox asset #{roblox_asset_id} (HTTP {status} / {status2}): "
