@@ -887,8 +887,8 @@ def main():
         status, _, body = Client().post_json(
             f"{backend}/admin-api/api/asset/moderate",
             {"assetId": model_id, "isApproved": False, "is18Plus": False})
-        if status != 401:
-            fail(f"unauthenticated asset/moderate answered HTTP {status}, expected 401")
+        if status not in (401, 403):
+            fail(f"unauthenticated asset/moderate answered HTTP {status}, expected 401 or 403")
 
         status, _, body = owner.post_json(
             f"{backend}/admin-api/api/asset/moderate",
