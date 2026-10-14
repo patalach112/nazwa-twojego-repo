@@ -28,32 +28,32 @@ const GamePage = ({ name, description, assetId, ...props }) => {
 }
 export async function getServerSideProps(context) {
   const { assetId } = context.query;
-  const info = await getProductInfoLegacy(assetId);
   try {
-    if (info.AssetTypeId != 9) {
+    const info = await getProductInfoLegacy(assetId);
+    if (!info || info.AssetTypeId != 9) {
       return {
         props: {
           name: null,
           description: null,
-          assetId: assetId
+          assetId: assetId || null
         }
       }
     } else {
       return {
         props: {
-          name: info.Name,
-          description: info.Description,
-          assetId: assetId
+          name: info.Name || null,
+          description: info.Description || null,
+          assetId: assetId || null
         }
       }
     }
   } catch (error) {
-    console.error(error);
+    console.error('Failed to fetch game product info in getServerSideProps:', error.message);
     return {
       props: {
         name: null,
         description: null,
-        assetId: null
+        assetId: assetId || null
       }
     };
   }

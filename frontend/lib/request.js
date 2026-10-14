@@ -1,5 +1,6 @@
 import axios from 'axios';
 import config from './config';
+import { targetUrl } from './backendProxy.cjs';
 
 let _csrf = '';
 
@@ -38,6 +39,19 @@ export const getUrlWithProxy = (url) => {
 }
 
 /**
+ * Resolves an API URL to the internal backend origin during SSR.
+ * @param {string} url
+ * @returns {string}
+ */
+export const resolveServerUrl = (url) => {
+    try {
+        return targetUrl(url, config);
+    } catch (_) {
+        return url;
+    }
+}
+
+/**
  * @param {string} method
  * @param {string} url
  * @param {any?} data
@@ -60,7 +74,7 @@ const request = async (method, url, data, verbose = false) => {
         }
         return await axios.request({
             method,
-            url: getUrlWithProxy(url),
+            url: isBrowser ? getUrlWithProxy(url) : resolveServerUrl(url),
             data: data,
             headers: headers,
             maxRedirects: 0,
