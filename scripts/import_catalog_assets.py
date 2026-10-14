@@ -120,11 +120,17 @@ def make_png_template(width=585, height=559, base_rgba=(40, 60, 100, 255), patte
             + chunk(b"IEND", b""))
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, target):
+        return None
+
+
 class CatalogClient:
     def __init__(self, base_url="http://localhost:5000", session_cookie=None):
         self.base_url = base_url.rstrip("/")
         self.session_cookie = session_cookie
         self.csrf_token = None
+        self.opener = urllib.request.build_opener(NoRedirect())
 
     def request(self, method, path, data=None, headers=None):
         url = urllib.parse.urljoin(self.base_url, path)
@@ -140,60 +146,108 @@ class CatalogClient:
 
         req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                token = resp.headers.get("x-csrf-token")
-                if token:
-                    self.csrf_token = token
+            with self.opener.open(req, timeout=30) as resp:
+                status = resp.status
+                resp_headers = resp.headers
                 content = resp.read()
-                return resp.status, dict(resp.headers), content
         except urllib.error.HTTPError as err:
-            token = err.headers.get("x-csrf-token")
-            if token:
-                self.csrf_token = token
-            body = err.read()
-            return err.code, dict(err.headers), body
+            status = err.code
+            resp_headers = err.headers
+            content = err.read()
+        except Exception as ex:
+            raise RuntimeError(f"Network error connecting to {url}: {ex}") from ex
+
+        token = resp_headers.get("x-csrf-token")
+        if token:
+            self.csrf_token = token
+
+        cookie_list = resp_headers.get_all("Set-Cookie") if hasattr(resp_headers, "get_all") else [resp_headers.get("Set-Cookie", "")]
+        for c in (cookie_list or []):
+            match = re.search(r"\.PEKOSECURITY=([^;,\s]+)", c)
+            if match:
+                self.session_cookie = match.group(1)
+
+        return status, dict(resp_headers), content
 
     def login(self, username, password):
         print(f"[*] Logging in as '{username}' on {self.base_url}...")
-        status, _, body = self.request("GET", "/auth/login")
-        if status != 200:
-            raise RuntimeError(f"Failed to fetch login page (HTTP {status})")
 
-        parser = FormTokenParser()
-        parser.feed(body.decode("utf-8", "replace"))
-        if not parser.token:
-            raise RuntimeError("Antiforgery token not found on login page")
+        # 1. Direct JSON API login endpoints (fast, no CSRF/antiforgery scraping needed)
+        api_attempts = [
+            ("/mobileapi/login", {"username": username, "password": password}),
+            ("/v1/login", {"cvalue": username, "password": password}),
+            ("/apisite/mobileapi/login", {"username": username, "password": password}),
+            ("/apisite/v1/login", {"cvalue": username, "password": password}),
+        ]
 
-        payload = urllib.parse.urlencode({
-            "username": username,
-            "password": password,
-            "__RequestVerificationToken": parser.token,
-        }).encode("utf-8")
+        last_status = None
+        for endpoint, payload in api_attempts:
+            data = json.dumps(payload).encode("utf-8")
+            status, headers, body = self.request(
+                "POST",
+                endpoint,
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+            last_status = status
 
-        # Disable auto-follow to capture Set-Cookie
-        req = urllib.request.Request(
-            f"{self.base_url}/auth/login",
-            data=payload,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "Marine-Catalog-Importer/1.0",
-            },
-            method="POST",
+            if status == 200:
+                user_id = None
+                try:
+                    resp_json = json.loads(body.decode("utf-8", "replace"))
+                    user_info = resp_json.get("UserInfo") or resp_json.get("user") or {}
+                    user_id = user_info.get("UserID") or user_info.get("id")
+                except Exception:
+                    pass
+
+                if self.session_cookie:
+                    extra = f" (User ID: {user_id})" if user_id else ""
+                    print(f"[+] Login successful via {endpoint}! Logged in as '{username}'{extra}.")
+                    return True
+
+            if status in (400, 401, 403):
+                # Endpoint exists, credentials rejected or account locked
+                err_text = body.decode("utf-8", "replace")
+                try:
+                    parsed = json.loads(err_text)
+                    err_text = parsed.get("message") or parsed.get("errors", [{}])[0].get("message", err_text)
+                except Exception:
+                    pass
+                raise RuntimeError(f"Login rejected (HTTP {status}): {err_text}")
+
+            # HTTP 404 or other status: route not mapped on this base URL, continue to next candidate
+
+        # 2. Razor form fallback at /auth/accountlogin
+        print("[*] API login endpoints returned 404, falling back to Razor login at /auth/accountlogin...")
+        status, _, body = self.request("GET", "/auth/accountlogin")
+        if status == 200:
+            parser = FormTokenParser()
+            parser.feed(body.decode("utf-8", "replace"))
+            if parser.token:
+                form_payload = urllib.parse.urlencode({
+                    "username": username,
+                    "password": password,
+                    "__RequestVerificationToken": parser.token,
+                }).encode("utf-8")
+                status, headers, body = self.request(
+                    "POST",
+                    "/auth/accountlogin",
+                    data=form_payload,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                if self.session_cookie:
+                    print(f"[+] Login successful via /auth/accountlogin! Session acquired.")
+                    return True
+                if status in (400, 401, 403):
+                    raise RuntimeError(f"Login rejected (HTTP {status}): {body[:200].decode('utf-8', 'replace')}")
+
+        if self.session_cookie:
+            return True
+
+        raise RuntimeError(
+            f"Login failed: Could not authenticate as '{username}' on {self.base_url} (last response HTTP {last_status}). "
+            f"Tip: If you are already logged into the website in your browser, you can pass --cookie <.PEKOSECURITY> directly."
         )
-        try:
-            urllib.request.urlopen(req, timeout=15)
-        except urllib.error.HTTPError as err:
-            cookie_header = err.headers.get("Set-Cookie", "")
-            match = re.search(r"\.PEKOSECURITY=([^;]+)", cookie_header)
-            if match:
-                self.session_cookie = match.group(1)
-                print(f"[+] Login successful! Session acquired.")
-                return True
-            raise RuntimeError(f"Login failed (HTTP {err.code}): {err.read()[:200].decode('utf-8', 'replace')}")
-        except Exception as ex:
-            raise RuntimeError(f"Unexpected login error: {ex}")
-
-        raise RuntimeError("Login failed: no session cookie received")
 
     def create_clothing(self, name, description, clothing_type, png_bytes, price=0):
         print(f"[*] Uploading clothing '{name}' ({clothing_type}, {len(png_bytes)} bytes)...")
@@ -315,7 +369,7 @@ def seed_starter_pack(client, price=0):
 
 def main():
     parser = argparse.ArgumentParser(description="Marine Catalog Importer & Seeder")
-    parser.add_argument("--backend", default="http://localhost:5000", help="Base backend URL (default: http://localhost:5000)")
+    parser.add_argument("--backend", "--base-url", dest="backend", default="http://localhost:5000", help="Base backend URL (default: http://localhost:5000)")
     parser.add_argument("--cookie", help="Existing .PEKOSECURITY cookie value")
     parser.add_argument("--username", help="Staff/Owner username to login")
     parser.add_argument("--password", help="Staff/Owner password to login")
