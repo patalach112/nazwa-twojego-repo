@@ -13,6 +13,7 @@ check three things that have to stay true:
 """
 
 import base64
+from test_catalog_importer import CatalogImporterTests
 import contextlib
 import http.client
 import io
