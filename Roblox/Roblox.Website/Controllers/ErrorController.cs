@@ -94,6 +94,15 @@ public class ErrorController : ControllerBase
             });
             code = (HttpStatusCode) badHttpRequest.StatusCode;
         }
+        else if (exception is Roblox.Models.Economy.InternalPurchaseFailureException ipf)
+        {
+            errorList.Add(new ErrorResponseEntry()
+            {
+                code = 0,
+                message = ipf.Message,
+            });
+            code = HttpStatusCode.BadRequest;
+        }
 
         else
         {
