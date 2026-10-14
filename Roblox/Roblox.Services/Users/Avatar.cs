@@ -946,10 +946,10 @@ public class AvatarService : ServiceBase, IService {
         // Update the avatar thumbnail, excluding 3D
         await UpdateUserAvatarImages(userId, headshotUrl, thumbnailUrl, null);
 
-        var thumbnail3DResult = await RenderingHandler.RequestPlayerThumbnail3D(userId);
         // Now thumbnail 3D, these have a unique format in JSON
         try
         {
+            var thumbnail3DResult = await RenderingHandler.RequestPlayerThumbnail3D(userId);
             // TODO: consider resizing these 3D renders — they may be too large
             var thumbJson = JsonSerializer.Deserialize<Thumbnail3DRender>(thumbnail3DResult);
             if (thumbJson is null)

@@ -135,14 +135,17 @@ const AvatarInfoStore = createContainer(() => {
             feedback.addFeedback("Could not get new avatar render. Please try again later.", FeedbackType.ERROR);
         console.log(`Got avatar render in ${stopwatch.ElapsedMilliseconds()}ms, in ${attempts} attempts.`);
         
-        // Separated because 3D renders usually take longer
+        setIsRendering(false);
+        debo.current = false;
+
+        // Separated because 3D renders usually take longer and may not be available
         attempts = 0;
         stopwatch = new Stopwatch();
         stopwatch.Start();
-        while (avThumb3D == null && attempts <= 10) {
+        while (avThumb3D == null && attempts <= 5) {
             let thumbnail = await multiGetUserThumbnails3D({userIds: [auth.userId]})
                 .then(result => result[0]);
-            if (thumbnail.state === "Completed" && typeof thumbnail.imageUrl === "string") {
+            if (thumbnail?.state === "Completed" && typeof thumbnail.imageUrl === "string") {
                 /** @type Thumbnail3D */
                 let thumb = (await request("GET", thumbnail.imageUrl)).data;
                 if (thumb?.textures?.length && thumb.textures.length > 0) {
@@ -156,12 +159,9 @@ const AvatarInfoStore = createContainer(() => {
             await wait(1);
         }
         stopwatch.Stop();
-        if (attempts > 10 && avThumb3D == null)
-            feedback.addFeedback("Could not get new avatar render. Please try again later.", FeedbackType.ERROR);
-        console.log(`Got 3D avatar render in ${stopwatch.ElapsedMilliseconds()}ms, in ${attempts} attempts.`);
-        
-        setIsRendering(false);
-        debo.current = false;
+        if (attempts > 5 && avThumb3D == null)
+            console.warn("3D avatar render is not available yet.");
+        console.log(`Finished 3D avatar poll in ${stopwatch.ElapsedMilliseconds()}ms, in ${attempts} attempts.`);
     }, [isRendering]);
     
     useEffect(() => {

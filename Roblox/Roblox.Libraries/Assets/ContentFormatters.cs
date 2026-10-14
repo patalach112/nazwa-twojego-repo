@@ -34,7 +34,10 @@ namespace Roblox.Libraries.Assets
 
         private static string GetTemplateOneParam(string templateName, string paramName, string paramValue)
         {
-            return AddTemplateParameter(GetTemplate(templateName), paramName, paramValue);
+            var xml = AddTemplateParameter(GetTemplate(templateName), paramName, paramValue);
+            return xml
+                .Replace("http://www.roblox.com/asset/?id=", "rbxassetid://")
+                .Replace("https://www.roblox.com/asset/?id=", "rbxassetid://");
         }
         
         public static string GetTeeShirt(long contentId)

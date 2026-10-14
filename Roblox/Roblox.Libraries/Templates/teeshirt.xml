@@ -4,7 +4,7 @@
     <Item class="ShirtGraphic" referent="RBX0">
         <Properties>
             <Content name="Graphic">
-                <url>http://www.roblox.com/asset/?id={assetId}</url>
+                <url>rbxassetid://{assetId}</url>
             </Content>
             <string name="Name">Shirt Graphic</string>
             <bool name="archivable">true</bool>
