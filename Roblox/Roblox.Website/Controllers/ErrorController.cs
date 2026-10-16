@@ -81,6 +81,28 @@ public class ErrorController : ControllerBase
             });
             code = HttpStatusCode.TooManyRequests;
         }
+        else if (exception is Microsoft.AspNetCore.Http.BadHttpRequestException badHttpRequest)
+        {
+            // Kestrel and MVC reject oversized or malformed requests before a handler
+            // runs. Keep the transport status (for example 413 for a body over the
+            // endpoint limit) and return a generic message instead of a 500 that
+            // echoes request internals.
+            errorList.Add(new ErrorResponseEntry()
+            {
+                code = 0,
+                message = "The request was rejected",
+            });
+            code = (HttpStatusCode) badHttpRequest.StatusCode;
+        }
+        else if (exception is Roblox.Models.Economy.InternalPurchaseFailureException ipf)
+        {
+            errorList.Add(new ErrorResponseEntry()
+            {
+                code = 0,
+                message = ipf.Message,
+            });
+            code = HttpStatusCode.BadRequest;
+        }
 
         else
         {

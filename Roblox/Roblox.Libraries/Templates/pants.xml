@@ -4,7 +4,7 @@
     <Item class="Pants" referent="RBX0">
         <Properties>
             <Content name="PantsTemplate">
-                <url>http://www.roblox.com/asset/?id={assetId}</url>
+                <url>https://www.silrev.biz:5000/asset/?id={assetId}</url>
             </Content>
             <string name="Name">Pants</string>
             <bool name="archivable">true</bool>

@@ -4,7 +4,6 @@
 	import SideNav from "./SideNav.svelte";
 </script>
 
-
 <style>
 	main {
 		min-height: 90vh;
@@ -17,12 +16,17 @@
 <Header />
 
 <div class="container-fluid">
-	<SideNav />
-	<main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 mt-4 flex-shrink-0">
-		<slot />
-	</main>
+	<div class="row">
+		<SideNav />
+		<main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 mt-4 flex-shrink-0">
+			<slot />
+		</main>
+	</div>
 </div>
-<div class="col-md-9 ms-sm-auto col-lg-10 mt-4">
-	<Footer />
+<div class="container-fluid">
+	<div class="row">
+		<div class="col-md-9 ms-sm-auto col-lg-10 mt-4">
+			<Footer />
+		</div>
+	</div>
 </div>
-

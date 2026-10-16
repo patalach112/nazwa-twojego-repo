@@ -32,9 +32,24 @@ namespace Roblox.Libraries.Assets
             return templateXml;
         }
 
+        public static string GetAssetBaseUrl()
+        {
+            var env = Environment.GetEnvironmentVariable("RENDERER_ASSET_BASE_URL");
+            if (!string.IsNullOrEmpty(env)) return env.TrimEnd('/');
+            if (!string.IsNullOrEmpty(Configuration.BaseUrl) && Configuration.BaseUrl.Contains("silrev.biz"))
+                return Configuration.BaseUrl.TrimEnd('/');
+            return "https://www.silrev.biz:5000";
+        }
+
         private static string GetTemplateOneParam(string templateName, string paramName, string paramValue)
         {
-            return AddTemplateParameter(GetTemplate(templateName), paramName, paramValue);
+            var baseUrl = GetAssetBaseUrl();
+            var xml = AddTemplateParameter(GetTemplate(templateName), paramName, paramValue);
+            return xml
+                .Replace("{baseUrl}", baseUrl)
+                .Replace("http://www.roblox.com/asset/?id=", baseUrl + "/asset/?id=")
+                .Replace("https://www.roblox.com/asset/?id=", baseUrl + "/asset/?id=")
+                .Replace("rbxassetid://", baseUrl + "/asset/?id=");
         }
         
         public static string GetTeeShirt(long contentId)

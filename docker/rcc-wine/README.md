@@ -22,6 +22,8 @@ docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/b
 docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/lua_probe.py
 # For the selected 2020 container only: one controlled JSON ExecuteScript job.
 docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/json_probe.py
+# And one real thumbnail render of two different DataModels:
+docker compose -f docker-compose.rcc-wine.yml exec rcc-wine python3 /usr/local/bin/thumbnail_probe.py
 # Stop RCC, Wine and Xvfb together:
 docker compose -f docker-compose.rcc-wine.yml down
 ```
@@ -68,22 +70,32 @@ workflow fails when required checks fail; 2018 JSON dispatch remains untested.
 
 The actual container experiment on 2026-10-12 established:
 
-| Bundled build | SOAP response | Execution job / CloseJob | Game join |
-| --- | --- | --- | --- |
-| 2016 | passed (`GetVersion` returns `?` in this modified binary) | passed | not tested |
-| 2017 | passed (`0.314.0.159344`) | passed | not tested |
-| 2018 | passed | not applicable: requires JSON dispatch | not tested |
-| 2020 | passed (`0.450.0.411923`) with `Settings.json` | JSON ExecuteScript passed | not tested |
+| Bundled build | SOAP response | Execution job / CloseJob | Thumbnail render | Game join |
+| --- | --- | --- | --- | --- |
+| 2016 | passed (`GetVersion` returns `?` in this modified binary) | passed | not applicable | not tested |
+| 2017 | passed (`0.314.0.159344`) | passed | not applicable | not tested |
+| 2018 | passed | not applicable: requires JSON dispatch | not applicable | not tested |
+| 2020 | passed (`0.450.0.411923`) with `Settings.json` | JSON ExecuteScript passed | passed: two different DataModels rendered as 420x420 PNG through the JSON `Thumbnail` mode | not tested |
 
 The 2018 and 2020 servers explicitly rejected raw Lua as invalid JSON. This is
 a different job contract, not evidence that Wine failed to load the executable.
 The 2020 controlled JSON execution was verified in the real Wine workflow:
 https://github.com/patalach112/nazwa-twojego-repo/actions/runs/38232114384
 This proves JSON dispatch into Lua, not `GameServer` mode or thumbnail rendering.
+The 2020 thumbnail render was verified on 2026-10-12 in
+https://github.com/patalach112/nazwa-twojego-repo/actions/runs/38268672127
+(`RCC Wine 2020 thumbnail: two different DataModels rendered as 420x420 PNG through Thumbnail`),
+so this build does produce real images for a DataModel without a place file.
 2018 JSON execution remains unverified. The corresponding scripts in
 `game-renderer/` show other request shapes but do not turn this smoke test into
 a complete launcher. `scripts/test_rcc_json_probe.py` checks probe contract and
 cleanup with a substitute RPC only; it is not the actual Wine execution proof.
+
+The thumbnail probe renders local parts, not a user avatar and not an uploaded
+asset: it proves that this RCC build produces real images for a DataModel, not
+that avatar, clothing or place thumbnails match the website contract yet. The
+website still needs a renderer service in front of RCC (`Render:BaseUrl`), which
+is the next, separate step.
 
 These checks do **not** load a real place, render an avatar, create the game UDP
 listener, start the client proxy, send `/gs/*` callbacks or join from a client.
@@ -100,6 +112,30 @@ python3 scripts/test_rcc_wine.py
 # Restrict the experiment if needed:
 RCC_WINE_YEARS=2016 python3 scripts/test_rcc_wine.py
 ```
+
+## Thumbnail scripts
+
+A JSON `Thumbnail` job loads `internalscripts/thumbnails/<Settings.Type>.lua` from the
+runtime copy, and this build ships those scripts itself (`Image.lua`,
+`Model.lua`, `Hat.lua`, `Mesh.lua`, `Shirt.lua`, `Pants.lua`, `Head.lua`,
+`Avatar.lua`, `Avatar_R15_Action.lua`, `Closeup.lua` and more, plus `modules/`).
+They are used exactly as shipped: `Settings.Arguments` arrives as varargs, each file
+declares its own argument list, and nothing in this repository writes to them.
+The entrypoint only *verifies* that every script in
+`docker/rcc-wine/required-thumbnail-scripts.txt` exists. Missing ones are reported and
+the container still starts, because the standalone experiment mounts several builds
+and the older ones ship fewer scripts; `RCC_VERIFY_THUMBNAIL_SCRIPTS=1` turns the report
+into a refusal to start, and the local renderer's own RCC service sets it because the
+renderer asks for those scripts by name. `docker/renderer/` builds the arguments for the
+routes it serves, and `scripts/test_renderer_contract.py` parses these shipped files and
+fails when the renderer and a script disagree.
+
+## Where RCC runs in the local stack
+
+This image is the RCC runtime *and* the base of `docker/renderer/Dockerfile`, which adds
+the renderer service to it: RCCService binds its SOAP port to the loopback of its own
+container, so the renderer shares the container and talks to `127.0.0.1:64989`. The
+standalone experiment here is unchanged and still talks to RCC with `docker exec`.
 
 ## Other executables
 

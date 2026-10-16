@@ -20,6 +20,8 @@ jobs:
           node-version: 22
       - name: Test isolated persistent Docker configuration
         run: python3 -m unittest discover -s scripts -p test_local_docker.py -v
+      - name: Compile the asset import check before building the stack
+        run: python3 -m py_compile scripts/test_asset_import.py
       - name: Generate disposable real database configs
         run: python3 scripts/configure_local_docker.py --database-name marine_website_tests --project-name marine-website-tests --test
       - name: Build and start the actual website, frontend, migrations, Postgres and Redis
@@ -34,6 +36,13 @@ jobs:
         env:
           REAL_WEBSITE_TEST: '1'
         run: node frontend/test/real-website.cjs
+      - name: Import one PNG through the real admin API, load the staff panel and verify the local store
+        env:
+          ASSET_IMPORT_TEST: '1'
+          PYTHONUNBUFFERED: '1'
+        run: |
+          set -o pipefail
+          python3 scripts/test_asset_import.py 2>&1 | tee "$RUNNER_TEMP/asset-import.log"
       - name: Annotate Docker failures without exposing private configuration
         if: failure()
         run: |
@@ -42,8 +51,14 @@ jobs:
           python3 - <<'PY'
           import json, os, pathlib
           temporary = pathlib.Path(os.environ['RUNNER_TEMP'])
+          def read(name):
+              path = temporary / name
+              return path.read_text() if path.exists() else ''
           build_log = temporary / 'local-build.log'
-          logs = [('Local website runtime diagnostics', (temporary / 'local-website.log').read_text()),
+          # The import check writes its own output here because raw step logs are not
+          # always retrievable; its tail carries the traceback or the assertion that failed.
+          logs = [('Local asset import diagnostics', read('asset-import.log')),
+                  ('Local website runtime diagnostics', read('local-website.log')),
                   ('Local website build diagnostics', build_log.read_text() if build_log.exists() else '')]
           config = json.loads(pathlib.Path('docker/local/website.json').read_text())
           secrets = []
@@ -54,14 +69,23 @@ jobs:
                           secrets.append(child)
                       elif isinstance(child, dict): collect(child)
           collect(config)
+          for key in ('Host=', 'Password='):
+              for part in str(config.get('Postgres', '')).split(';'):
+                  if part.startswith(key) and len(part) > len(key):
+                      secrets.append(part[len(key):])
           migrations = json.loads(pathlib.Path('docker/local/migrations.json').read_text())
           secrets.append(migrations['knex']['connection']['password'])
+          summary = pathlib.Path(os.environ['GITHUB_STEP_SUMMARY'])
           for title, text in logs:
               for value in sorted(secrets, key=len, reverse=True): text = text.replace(value, '[redacted]')
               # Check annotations truncate near 4 KiB: keep the actual failure tail.
               diagnostics = '\n'.join(text.splitlines()[-45:])[-3500:]
               if diagnostics:
                   print(diagnostics)
+                  # Record the same tail in the job summary, which survives even when
+                  # the annotation list of the job is already full.
+                  with summary.open('a') as stream:
+                      stream.write('## ' + title + '\n\n```\n' + diagnostics + '\n```\n\n')
                   print('::error title=' + title + '::' + diagnostics.replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
           PY
       - name: Retain actual website screenshots and browser report

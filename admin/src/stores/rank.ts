@@ -21,6 +21,10 @@ import request from '../lib/request';
 const permissionsPromise = request.get<IRankResponse>('/permissions').then(data => {
 	console.log('[info] current perms', data.data);
 	store.set(data.data);
+	return data.data;
+}).catch(err => {
+	console.error('[error] failed to fetch permissions', err);
+	return null;
 });
 
 export const promise = permissionsPromise;

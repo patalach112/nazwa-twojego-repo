@@ -25,22 +25,22 @@ const ItemPage = ({ name, description, assetId, ...props }) => {
 
 export async function getServerSideProps(context) {
   const { assetId } = context.query;
-  const info = await getProductInfoLegacy(assetId);
   try {
+    const info = await getProductInfoLegacy(assetId);
     return {
       props: {
-        name: info.Name,
-        description: info.Description,
-        assetId: assetId
+        name: info?.Name || null,
+        description: info?.Description || null,
+        assetId: assetId || null
       }
     };
   } catch (error) {
-    console.error(error);
+    console.error('Failed to fetch library product info in getServerSideProps:', error.message);
     return {
       props: {
         name: null,
         description: null,
-        assetId: null
+        assetId: assetId || null
       }
     };
   }

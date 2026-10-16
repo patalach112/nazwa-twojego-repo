@@ -17,7 +17,8 @@ ENV WINEARCH=win32 \
     RCC_PORT=64989 \
     RCC_EXE=RCCService.exe
 
-COPY entrypoint.sh run-wine.sh healthcheck.py lua_probe.py json_probe.py json_probe.lua /usr/local/bin/
+COPY entrypoint.sh run-wine.sh healthcheck.py lua_probe.py json_probe.py json_probe.lua \
+    thumbnail_probe.py thumbnail_probe.lua required-thumbnail-scripts.txt /usr/local/bin/
 RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/run-wine.sh \
     && mkdir /opt/rcc \
     && chown rcc:rcc /opt/rcc

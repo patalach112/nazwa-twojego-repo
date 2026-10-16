@@ -20,31 +20,32 @@
 
 	const resetAllUsernames = async () => {
 		let groups = chunk(playersData.filter(v => v.checked), 100);
-								for (const items of groups) {
-									let promises = [];
-									for (const item of items) {
-										promises.push(request.request({
-											method: 'POST',
-											url: `users/${item.id}/reset-username`,
-										}));
-									}
-										await Promise.all(promises);
+		for (const items of groups) {
+			let promises = [];
+			for (const item of items) {
+				promises.push(request.request({
+					method: 'POST',
+					url: `users/${item.id}/reset-username`,
+				}));
+			}
+			await Promise.all(promises);
 		}
-	}
-	export let createdAt;
-	export let onlineAt;
+	};
 
-	const formatDate = (dateString) => {
+	const formatDate = (dateString: string | null | undefined) => {
+		if (!dateString) return "N/A";
 		const date = new Date(dateString);
+		if (isNaN(date.getTime())) return "N/A";
 		return date.toLocaleString('en-US', {
-		year: 'numeric',
-		month: 'long',
-		day: 'numeric',
-		hour: 'numeric',
-		minute: 'numeric',
-		hour12: true
+			year: 'numeric',
+			month: 'long',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: 'numeric',
+			hour12: true
 		});
 	};
+
 	const banAllUsers = async () => {
 		let groups = chunk(playersData.filter(v => v.checked), 100);
 		for (const items of groups) {
@@ -62,24 +63,31 @@
 			}
 			await Promise.all(promises);
 		}
-	}
+	};
+
+	let searchQuery = "";
 
 	const searchUsers = () => {
 		disabled = true;
 		request
 			.get("/users?orderByColumn=" + encodeURIComponent(sortColumn) + "&orderByMode=" + encodeURIComponent(sortMode) + "&limit=" + limit + "&offset=" + offset + "&query=" + encodeURIComponent(searchQuery))
 			.then((res) => {
-				playersData = res.data.data;
+				playersData = (res && res.data && Array.isArray(res.data.data)) ? res.data.data : [];
+			})
+			.catch((err) => {
+				console.error("Failed to load users:", err);
+				playersData = [];
 			})
 			.finally(() => {
 				disabled = false;
 			});
-	}
+	};
 
 	$: {
-		searchUsers();
+		if (sortColumn || sortMode || limit || offset !== undefined) {
+			searchUsers();
+		}
 	}
-	let searchQuery = "";
 </script>
 
 <style>

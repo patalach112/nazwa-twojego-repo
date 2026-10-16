@@ -1,0 +1,22 @@
+# Thumbnail scripts the local renderer asks RCC for, by Settings.Type.
+# They must all exist in the build's own internalscripts/thumbnails directory.
+Image
+Decal
+Model
+Hat
+Gear
+Mesh
+MeshPart
+Shirt
+Pants
+Head
+BodyPart
+Package
+Place
+AnimationSilhouette
+AnimationManifest
+Avatar
+Avatar_R15_Action
+Avatar_R15_Standard
+AvatarAnimation
+Closeup

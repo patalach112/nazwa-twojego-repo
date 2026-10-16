@@ -72,6 +72,43 @@ No account is automatically made an owner. After registering, put your actual
 user ID into `OwnerUserId` in `docker/local/website.json` and restart `website`.
 Do not use a fixed guessed ID or grant every registered user staff privileges.
 
+## Staff panel
+
+The website image builds the Svelte staff panel from `admin/` and copies it to
+`/app/admin/`, which is where `Directories:AdminBundle` points. An account in
+`OwnerUserId` can therefore open **http://localhost:5000/admin/** and use the
+real forms, for example **Create Item** (`/asset/create`) and **Create Clothing**.
+Everyone else is redirected to `/home`, and an ordinary account keeps getting
+401/403 from the `/admin-api/api/` endpoints behind those screens.
+
+The panel is served by the .NET website, so use the backend port; the Next
+frontend on port 3000 proxies the API but not `/admin/` itself. Panel screens
+that need a renderer (re-render, thumbnails) remain pending until a renderer
+exists; create, version and manage screens work without one. A native
+(non-Docker) website still needs `cd admin && npm i && npm run build`.
+
+## How a stored thumbnail is named and served
+
+Worth knowing before reading the renderer test, because two conventions look
+alike and are not:
+
+* `UploadAssetContent` hashes the bytes and returns the **plain hash**, while
+  writing `<hash>.png`; `asset_thumbnail.content_url` therefore holds
+  `d41d8c...` without an extension.
+* The website turns that key into the browser-facing URL
+  `/images/thumbnails/<hash>.png` (absolute, built from `BaseUrl`, which for a
+  local stack is the frontend on port 3000, and the frontend proxies `/images`
+  to the website). `ThumbnailMiddleware` serves that file from
+  `docker/local/data/thumbnails/`.
+* A texture render is stored `ReviewApproved`, a model/mesh render
+  `AwaitingApproval` - the asset's own moderation status decides whether the
+  catalog shows it.
+* While there is no thumbnail row at all, the batch API
+  (`POST /v1/batch` with `type: AssetThumbnail`) answers `errorCode 4`,
+  "The requested Ids are invalid, of an invalid type or missing". That is this
+  build's way of saying *no picture yet*, not a failed render: anything waiting
+  for a render has to watch the database row, not that answer.
+
 ## Real account/browser regression
 
 The `Real website accounts` workflow builds these images and runs real Chromium
@@ -99,12 +136,93 @@ browser script requires explicit opt-in, a matching `*_tests` database and
 loopback URLs. It creates actual test accounts and restarts containers, so do
 not point it at personal or shared production data.
 
+## Local asset import check
+
+`scripts/test_asset_import.py` imports one controlled PNG through the real
+`/admin-api/api/asset/create` endpoint of the same disposable stack and verifies
+the stored rows, the content-addressed file in `docker/local/data/assets/`,
+anonymous delivery through `/asset/?id=`, survival of a `website` restart, the
+refusal of a renamed text file, a path-like file name and oversized uploads, and
+that a disabled renderer leaves the thumbnail pending instead of reporting a
+finished one. It also loads the staff panel as the configured owner: the page,
+the redirected `bundle.js`/`bundle.css` and the permissions endpoint must come
+from the built bundle, while an anonymous visitor and an ordinary account are
+still sent away from `/admin/`. It registers its own accounts, writes the new
+user id into `OwnerUserId` (the documented mechanism, not SQL) and restores
+`docker/local/website.json` afterwards.
+
+```bash
+python3 scripts/configure_local_docker.py \
+  --database-name marine_website_tests --project-name marine-website-tests --test
+./scripts/local-stack.sh up --build -d
+ASSET_IMPORT_TEST=1 python3 scripts/test_asset_import.py
+```
+
+It refuses to run against a non-`*_tests` configuration. Avatar thumbnails, the
+remaining panel screens that need a renderer and game joins are **not** covered by
+this check; a green run proves the local import/delivery path and that the panel is
+served and gated, not that rendering works. Avatar thumbnails through the website are
+covered by `scripts/test_local_renderer.py` instead, with the renderer profile on.
+
+## Optional renderer profile
+
+Rendering stays off until it is enabled on purpose. `scripts/configure_local_docker.py
+--enable-renderer` writes `Render:BaseUrl = http://renderer:3521/` into
+`docker/local/website.json` and reuses the existing `RccAuthorization` value as
+`Render:Authorization` (no new secret, nothing rotated). The same value is written to
+`docker/local/compose.env` as `RENDERER_AUTHORIZATION`, so the renderer container gets
+it from its environment, then:
+
+```bash
+./scripts/local-stack.sh restart website
+./scripts/local-stack.sh --profile renderer up -d --build
+```
+
+Start the renderer after enabling: the value is read when the container (re)starts, and
+`--enable-renderer` only rewrites files.
+
+The single `renderer` service runs the vendored RCC 2020 build from
+`RCCService/RCCService2020` under Wine *and* the renderer that turns the website's HTTP
+render requests into JSON `Thumbnail` jobs, because RCCService binds its SOAP port to
+its own container's loopback. RCC's own thumbnail scripts are used unmodified. The
+service runs without privileges, with a read-only root, and only its own port is
+published (on `127.0.0.1`); details and limits in `docker/renderer/README.md`.
+
+RCC renders a thumbnail by fetching the asset itself, and this build trusts only the host
+names compiled into it *and* upgrades those fetches to https. The renderer container
+therefore answers `www.silrev.biz` (plus `assetgame./assetdelivery.`) itself, on TLS, with a
+throwaway certificate, and relays the requests to the website: the names exist inside this
+stack only, nothing is published under them, and `supervise.sh` refuses to start RCC when
+the name does not answer with the container's own certificate, so a render can never
+quietly use an asset from the real internet host.
+Switching the profile off (`./scripts/local-stack.sh --profile renderer down`) returns
+the stack to pending thumbnails; uploads, delivery and accounts never wait for the
+renderer.
+
+`scripts/test_local_renderer.py` proves the whole path against a disposable `*_tests`
+stack: uploads through the real admin API, the website's own render
+requests, RCC under Wine, the 420x420 PNG in `docker/local/data/thumbnails/`, the
+served thumbnail URL, a model render that differs from the texture render, an account's
+own avatar - posted to the website's `redraw-thumbnail` endpoint, stored as the avatar
+thumbnail and headshot, reported through the same thumbnail API the frontend calls and
+downloaded from the origin the browser uses - refusals for a missing Authorization
+value and for unimplemented endpoints, and that stopped rendering leaves the asset
+usable with a pending thumbnail.
+
+The avatar flow also needs `user_avatar.thumbnail_3d_url`: the migrator adds it on the
+next stack start (`api/migrations/20261012120000_addAvatarThumbnail3dUrl.js`), and
+without it the website fails on its own avatar update before it can ask the renderer for
+anything.
+
 ## Still outside this stack
 
 There is no operational RCC launcher/proxy or verified real game join. The
 experimental RCC Wine compose file is separate. A controlled 2020 JSON
-`ExecuteScript` job passed under Wine; `GameServer` mode and client joins remain
-untested. Disabled rendering produces pending thumbnails, not rendered avatars.
+`ExecuteScript` job and one real 420x420 PNG thumbnail render of two different
+DataModels passed under Wine (`RCC Wine smoke`); `GameServer` mode and client joins
+remain untested. With the optional `renderer` profile above, the website does have a
+renderer service in front of RCC for local runs, and leaving it off keeps producing
+pending thumbnails rather than a rendered avatar.
 Chat, trade/economy workflows, uploads/Go validation, account recovery and 2FA
 end-to-end behavior are not established by the basic account test.
 

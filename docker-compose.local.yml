@@ -89,6 +89,77 @@ services:
       start_period: 15s
     stop_grace_period: 15s
 
+  # Optional renderer stack: enable it with
+  #   ./scripts/local-stack.sh --profile renderer up -d --build
+  # and put http://renderer:3521/ into Render:BaseUrl of docker/local/website.json
+  # (scripts/configure_local_docker.py --enable-renderer writes exactly that).
+  # Without the profile, rendering stays disabled and thumbnails stay pending.
+  renderer:
+    profiles: [renderer]
+    # RCC and the renderer share this container on purpose: RCCService binds its SOAP
+    # port to its own loopback, which no other container can reach.
+    build:
+      context: docker
+      dockerfile: renderer/Dockerfile
+    init: false # The image uses tini with process-group signal forwarding.
+    # Deliberately no depends_on at all: the renderer needs neither the website nor a
+    # healthy database to start, and depending on the website would make
+    # `restart website` restart the renderer and cut the renders it is doing. RCC runs
+    # in this same container, and supervise.sh waits for it before serving anything.
+    environment:
+      # RCCService.exe trusts only the host names compiled into it, and it upgrades asset
+      # URLs to https. The renderer therefore serves such a name itself, over TLS
+      # (asset_tls.py, port 5000 here), and hands RCC that URL instead of the compose
+      # service name. supervise.sh refuses to start RCC when the name does not answer with
+      # this container's own certificate, so no render can use a foreign asset.
+      RCC_BASE_URL: https://www.silrev.biz:5000
+      RENDERER_ASSET_BASE_URL: https://www.silrev.biz:5000
+      # The CA bundle RCC verifies certificates with: this stack's own, written by
+      # asset_tls.py from the authorities the build ships plus the local one.
+      CURL_CA_BUNDLE: /home/rcc/tls/cacert.pem
+      SSL_CERT_FILE: /home/rcc/tls/cacert.pem
+      RENDERER_TLS_PORT: "5000"
+      RENDERER_TLS_UPSTREAM: website:5000
+      RENDERER_TLS_HOST: www.silrev.biz
+      RCC_SOAP_NAMESPACE: ${RCC_SOAP_NAMESPACE:-http://silrev.biz/}
+      # The renderer asks RCC for these scripts by name, so the build must have them.
+      RCC_VERIFY_THUMBNAIL_SCRIPTS: "1"
+      RENDERER_PORT: "3521"
+      # RCC under Wine needs its first render to warm up; the job timeout is generous
+      # but still bounded, and CloseJob always runs.
+      RENDERER_JOB_TIMEOUT: ${RENDERER_JOB_TIMEOUT:-120}
+      RENDERER_QUERY_TIMEOUT: ${RENDERER_QUERY_TIMEOUT:-10}
+      WEBSITE_BASE_URL: http://website:5000
+      # Written by scripts/configure_local_docker.py --enable-renderer, from the same
+      # value the website uses. Empty means "read the mounted config instead".
+      RENDERER_AUTHORIZATION: ${RENDERER_AUTHORIZATION:-}
+    ports:
+      - '127.0.0.1:${RENDERER_PORT:-3521}:3521'
+    volumes:
+      - ${RCC_DIRECTORY:-./RCCService/RCCService2020}:/opt/rcc:ro
+      # The renderer reuses the website's own Render:Authorization value instead of
+      # introducing and rotating another secret. Requires docker/local/website.json,
+      # which the first stack start creates.
+      - ./docker/local/website.json:/config/website.json:ro
+    # Only this container answers the trusted asset host names, on its own port 5000; the
+    # aliases are compose network aliases, never published.
+    networks:
+      default:
+        aliases:
+          - www.silrev.biz
+          - assetgame.silrev.biz
+          - assetdelivery.silrev.biz
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /home/rcc:rw,nosuid,nodev,uid=1000,gid=1000,size=2g
+      - /tmp:rw,nosuid,nodev,size=256m
+    mem_limit: 4g
+    cpus: 2
+    pids_limit: 512
+    stop_grace_period: 25s
+
 volumes:
   local-postgres:
   local-redis:

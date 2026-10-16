@@ -1,7 +1,5 @@
 const MiniCssExtractPlugin = require('mini-css-extract-plugin');
-const PurgecssPlugin = require('purgecss-webpack-plugin');
 const path = require('path');
-const glob = require('glob')
 const sveltePreprocess = require('svelte-preprocess');
 
 const mode = process.env.NODE_ENV;
@@ -18,6 +16,7 @@ const conf = {
 		alias: {
 			svelte: path.dirname(require.resolve('svelte/package.json'))
 		},
+		conditionNames: ['svelte', 'browser', 'module', 'main'],
 		extensions: ['.mjs', '.js', '.ts', '.svelte'],
 		mainFields: ['svelte', 'browser', 'module', 'main']
 	},
@@ -70,16 +69,6 @@ const conf = {
 	plugins: [
 		new MiniCssExtractPlugin({
 			filename: '[name].css'
-		}),
-		new PurgecssPlugin({
-			paths: glob.sync(`${distPath}/**/*`, { nodir: true }),
-			safelist: [
-				'mod-card-black',
-				'mod-card-dark',
-				'mod-card-white',
-				'mod-card-default',
-				'dark-input'
-			],
 		}),
 	],
 	devtool: prod ? false : 'source-map',

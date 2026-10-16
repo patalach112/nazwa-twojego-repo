@@ -320,6 +320,31 @@ public class AvatarService : ServiceBase, IService {
                 if (hasEntry.moderationStatus != ModerationStatus.ReviewApproved) return false;
                 return true;
             }).ToList();
+
+            // Deduplicate single-slot items (keep the latest worn item for Shirt, Pants, etc.)
+            var singleSlotTypes = new HashSet<Type>
+            {
+                Type.Shirt, Type.Pants, Type.TeeShirt, Type.Face, Type.Head,
+                Type.Torso, Type.LeftArm, Type.RightArm, Type.LeftLeg, Type.RightLeg
+            };
+            var seenSlots = new HashSet<Type>();
+            var deduplicatedIds = new List<long>();
+            for (int i = assetIds.Count - 1; i >= 0; i--)
+            {
+                var id = assetIds[i];
+                var entry = safeModList.Find(v => v.assetId == id);
+                if (entry != null && singleSlotTypes.Contains(entry.assetType))
+                {
+                    if (seenSlots.Add(entry.assetType))
+                        deduplicatedIds.Add(id);
+                }
+                else
+                {
+                    deduplicatedIds.Add(id);
+                }
+            }
+            deduplicatedIds.Reverse();
+            assetIds = deduplicatedIds;
             // Finally, confirm user actually owns each assetId
             // goodAssetIds is a list of assets the user owns
             var goodAssetIds = new List<long>();
@@ -799,25 +824,25 @@ public class AvatarService : ServiceBase, IService {
 
     public async Task Update3DRenderModified(long userId, string avatarHash)
     {
-        var thumbnail3DUrl = $"/images/thumbnails/{avatarHash}_thumbnail3d.json";
+        var jsonPath = Path.Combine(Configuration.ThumbnailsDirectory, $"{avatarHash}_thumbnail3d.json");
+        if (!File.Exists(jsonPath)) return;
         try {
-            var thumbnail3DJson = await File.ReadAllTextAsync(Configuration.PublicDirectory + thumbnail3DUrl);
+            var thumbnail3DJson = await File.ReadAllTextAsync(jsonPath);
             var thumbJson = JsonSerializer.Deserialize<Thumbnail3DRendered>(thumbnail3DJson);
-            if (thumbJson is null)
-                throw new Exception("Renderer returned incorrect 3D thumbnail.");
+            if (thumbJson is null) return;
 
-            var objPath = Configuration.ThumbnailsDirectory + thumbJson.obj.Replace("/images/thumbnails/", "");
+            var objPath = Path.Combine(Configuration.ThumbnailsDirectory, thumbJson.obj.Replace("/images/thumbnails/", "").TrimStart('/'));
             if (File.Exists(objPath)) {
                 File.SetLastWriteTime(objPath, DateTime.Now);
             }
 
-            var mtlPath = Configuration.ThumbnailsDirectory + thumbJson.mtl.Replace("/images/thumbnails/", "");
+            var mtlPath = Path.Combine(Configuration.ThumbnailsDirectory, thumbJson.mtl.Replace("/images/thumbnails/", "").TrimStart('/'));
             if (File.Exists(mtlPath)) {
                 File.SetLastWriteTime(mtlPath, DateTime.Now);
             }
 
             foreach (var filePath2 in thumbJson.textures) {
-                var filePath = Configuration.ThumbnailsDirectory + filePath2.Replace("/images/thumbnails/", "");
+                var filePath = Path.Combine(Configuration.ThumbnailsDirectory, filePath2.Replace("/images/thumbnails/", "").TrimStart('/'));
                 if (File.Exists(filePath)) {
                     File.SetLastWriteTime(filePath, DateTime.Now);
                 }
@@ -825,10 +850,6 @@ public class AvatarService : ServiceBase, IService {
         }
         catch (Exception e) {
             Console.WriteLine($"[AvatarService] Couldn't set last updated for 3D Render for AvatarHash {avatarHash}. Error: {e.Message}");
-            if (e.Message.StartsWith("Could not find file")) {
-                Console.WriteLine("[AvatarService] Redrawing avatar due to missing 3D render files...");
-                await RedrawAvatar(userId);
-            }
         }
     }
 
@@ -880,14 +901,18 @@ public class AvatarService : ServiceBase, IService {
         if (!forceRedraw)
         {
             // Check if the hash exists already - If they do, we can skip rendering!
-            if (File.Exists(Configuration.PublicDirectory + thumbnailUrl) &&
-                File.Exists(Configuration.PublicDirectory + thumbnail3DUrl) &&
-                File.Exists(Configuration.PublicDirectory + headshotUrl))
+            var thumbnailFileOnDisk = Path.Combine(Configuration.ThumbnailsDirectory, $"{avatarHash}_thumbnail.png");
+            var headshotFileOnDisk = Path.Combine(Configuration.ThumbnailsDirectory, $"{avatarHash}_headshot.png");
+            if (File.Exists(thumbnailFileOnDisk) && File.Exists(headshotFileOnDisk))
             {
-                // Since both files exist, we can just update the URL and exit
-                await UpdateUserAvatarImages(userId, headshotUrl, thumbnailUrl, thumbnail3DUrl);
-                // We must mark the 3D render as used (so it doesn't get deleted on 3D render cleanup)
-                await Update3DRenderModified(userId, avatarHash);
+                var jsonPath = Path.Combine(Configuration.ThumbnailsDirectory, $"{avatarHash}_thumbnail3d.json");
+                string? stored3DUrl = File.Exists(jsonPath) ? thumbnail3DUrl : null;
+                // Since files exist, we can just update the URL and exit
+                await UpdateUserAvatarImages(userId, headshotUrl, thumbnailUrl, stored3DUrl);
+                if (stored3DUrl != null)
+                {
+                    await Update3DRenderModified(userId, avatarHash);
+                }
                 return;
             }
         }
@@ -946,10 +971,10 @@ public class AvatarService : ServiceBase, IService {
         // Update the avatar thumbnail, excluding 3D
         await UpdateUserAvatarImages(userId, headshotUrl, thumbnailUrl, null);
 
-        var thumbnail3DResult = await RenderingHandler.RequestPlayerThumbnail3D(userId);
         // Now thumbnail 3D, these have a unique format in JSON
         try
         {
+            var thumbnail3DResult = await RenderingHandler.RequestPlayerThumbnail3D(userId);
             // TODO: consider resizing these 3D renders — they may be too large
             var thumbJson = JsonSerializer.Deserialize<Thumbnail3DRender>(thumbnail3DResult);
             if (thumbJson is null)

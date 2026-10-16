@@ -181,15 +181,14 @@ const BuyModal = () => {
                         } catch (e) {
                             console.error("Purchase request failed due to the following error");
                             console.dir(e);
-                            if (e.message.toLowerCase().includes("already owned")) {
-                                feedbacked = true;
-                                feedback.addFeedback(e.message, FeedbackType.ERROR, true);
-                            }
+                            const errMsg = e.response?.data?.errors?.[0]?.message || e.message;
+                            feedbacked = true;
+                            feedback.addFeedback(errMsg || "Purchase failed. You have not been charged", FeedbackType.ERROR, true);
                         }
                         if (purchase) {
                             feedback.addFeedback("Purchase completed", FeedbackType.SUCCESS, true);
-                        } else {
-                            if (!feedbacked) feedback.addFeedback("Purchase failed. You have not been charged", FeedbackType.ERROR, true);
+                        } else if (!feedbacked) {
+                            feedback.addFeedback("Purchase failed. You have not been charged", FeedbackType.ERROR, true);
                         }
                         await wait(3);
                         window.location.reload();

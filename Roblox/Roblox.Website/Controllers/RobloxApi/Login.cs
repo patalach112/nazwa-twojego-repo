@@ -365,16 +365,8 @@ namespace Roblox.Website.Controllers
                 sessionId = await services.users.CreateSession(userId),
                 createdAt = DateTimeOffset.Now.ToUnixTimeSeconds(),
             });
-            // will be removed later this is just a hack to get the website to work :sob:
-            HttpContext.Response.Cookies.Append(Middleware.SessionMiddleware.CookieName, sessionCookie, new CookieOptions()
-            {
-                Domain = ".silrev.biz",
-                Secure = false,
-                Expires = DateTimeOffset.Now.Add(TimeSpan.FromDays(364)),
-                IsEssential = true,
-                Path = "/",
-                SameSite = SameSiteMode.Lax,
-            });
+            HttpContext.Response.Cookies.Append(Middleware.SessionMiddleware.CookieName, sessionCookie,
+                Lib.SessionCookieOptions.Create(Configuration.BaseUrl));
             return sessionCookie;
         }
         private async Task<bool> Login(string username, string password, long userId, string? totpCode, bool isPasswordLeaked, bool? skip2FA = false)

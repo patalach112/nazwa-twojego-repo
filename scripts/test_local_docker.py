@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
@@ -91,6 +92,45 @@ class DockerConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'distinct'):
             configure(self.directory, frontend_port=3000, backend_port=3000)
         self.assertFalse(self.directory.exists())
+
+
+class AvatarSchemaTest(unittest.TestCase):
+    """The local schema comes from api/migrations, so it has to carry the avatar columns.
+
+    A column that only existed in the original deployment's database makes the website
+    fail before it can ask for a render: the avatar redraw threw ``column
+    "thumbnail_3d_url" of relation "user_avatar" does not exist`` on its own first
+    update, so no render was ever requested and every local avatar stayed pending.
+    """
+
+    def setUp(self):
+        self.root = Path(__file__).resolve().parents[1]
+        self.migrations = '\n'.join(path.read_text()
+                                    for path in sorted((self.root / 'api/migrations').glob('*.js')))
+
+    def test_the_columns_the_avatar_model_reads_are_migrated(self):
+        model = (self.root / 'Roblox/Roblox.Services/DbModels/Users/Avatar.cs').read_text()
+        columns = re.findall(r'public\s+[\w<>?\[\]]+\s+(\w+)\s*\{\s*get', model)
+        # Guard the parse itself: the picture columns are the ones a redraw depends on.
+        self.assertIn('thumbnail_3d_url', columns)
+        missing = [name for name in columns if name not in self.migrations]
+        self.assertEqual(missing, [],
+                         'the avatar model reads columns no migration creates: ' + repr(missing))
+        self.assertIn("hasColumn('user_avatar'", self.migrations)
+
+    def test_the_columns_the_redraw_writes_are_migrated(self):
+        source = (self.root / 'Roblox/Roblox.Services/Users/Avatar.cs').read_text()
+        columns = set()
+        for match in re.finditer(r'UPDATE user_avatar SET', source):
+            statement = source[match.end():]
+            statement = statement[:statement.index('WHERE user_id')]
+            columns.update(re.findall(r'(\w+)\s*=\s*:', statement))
+        # Guard the parse itself: every write statement was read, including the picture one.
+        self.assertTrue({'thumbnail_url', 'headshot_thumbnail_url', 'thumbnail_3d_url'}
+                        <= columns, columns)
+        missing = [name for name in columns if name not in self.migrations]
+        self.assertEqual(missing, [],
+                         'the avatar redraw writes columns no migration creates: ' + repr(missing))
 
 
 if __name__ == '__main__':
