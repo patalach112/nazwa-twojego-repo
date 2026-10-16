@@ -459,7 +459,8 @@ namespace Roblox.Website.Controllers
         public async Task<string> CharacterFetchASHX(long userId)
         {
             var assets = await services.avatar.GetWornAssets(userId);
-            return $"{Configuration.BaseUrl}/Asset/BodyColors.ashx?userId={userId};{string.Join(";", assets.Select(c => Configuration.BaseUrl + "/Asset/?id=" + c))}";
+            var baseUrl = Roblox.Libraries.Assets.ContentFormatters.GetAssetBaseUrl();
+            return $"{baseUrl}/Asset/BodyColors.ashx?userId={userId};{string.Join(";", assets.Select(c => baseUrl + "/Asset/?id=" + c))}";
         }
         // prob the most worse code ive ever written
         [HttpPost("AbuseReport/InGameChatHandler.ashx")]
